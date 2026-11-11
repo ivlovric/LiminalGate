@@ -146,6 +146,8 @@ def test_brainflow_board_aliases():
         MUSE_2_BOARD = 38
 
     assert resolve_board_id(Ids, "muse_s_athena") == 67
+    assert resolve_board_id(Ids, "MUSE_S_ATHENA_BOARD") == 67
+    assert resolve_board_id(Ids, "67") == 67
     assert resolve_board_id(Ids, "synthetic") == -1
 
     class Typo:

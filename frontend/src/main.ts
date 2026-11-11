@@ -935,6 +935,10 @@ function renderSetupForm(): void {
     </div>
     <div class="stack for-input" data-for="brainflow" ${selected === "brainflow" ? "" : "hidden"}>
       ${field("Board", `<select id="cfg-board">${boards.map((name) => `<option value="${esc(name)}"${name === board ? " selected" : ""}>${esc(name)}</option>`).join("")}</select>`)}
+      <button type="button" id="cfg-ble-scan">Scan for devices</button>
+      <p class="hint">Needs the host's Bluetooth. In Docker, run with compose.host.yaml.</p>
+      <p id="cfg-ble-note" class="hint"></p>
+      <div id="cfg-ble-list" class="device-list"></div>
       ${field("MAC address", `<input id="cfg-mac" value="${esc(cfg?.brainflow_mac ?? "")}" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" />`)}
       ${field("Serial", `<input id="cfg-serial" value="${esc(cfg?.brainflow_serial ?? "")}" autocomplete="off" />`)}
     </div>
@@ -1000,6 +1004,23 @@ function renderSetupForm(): void {
   void fillSetupLists();
 }
 
+interface BrainflowBoard {
+  value: string;
+  enum: string;
+  board_id: number;
+  label: string;
+}
+interface BleDevice {
+  name: string;
+  mac: string;
+  rssi: number | null;
+  serial: string;
+  board: string;
+  board_id: number;
+  board_label: string;
+  note: string;
+}
+
 async function fillSetupLists(): Promise<void> {
   const files = document.getElementById("cfg-file");
   const currentPath = text(document.getElementById("cfg-playback"));
@@ -1011,6 +1032,20 @@ async function fillSetupLists(): Promise<void> {
       if (currentPath && body.files.includes(currentPath)) files.value = currentPath;
     } catch {
       /* the path field still works */
+    }
+  }
+  const boardPick = document.getElementById("cfg-board");
+  if (boardPick instanceof HTMLSelectElement) {
+    try {
+      const body = await api<{ boards: BrainflowBoard[] }>("/api/brainflow/boards");
+      const current = boardPick.value;
+      boardPick.innerHTML = body.boards
+        .map((row) => `<option value="${esc(row.value)}">${esc(row.label)}</option>`)
+        .join("");
+      ensureBoardOption(boardPick, current, current);
+      boardPick.value = current;
+    } catch {
+      /* the short Muse list still works */
     }
   }
   const profilePick = document.getElementById("cfg-profile");
@@ -1042,6 +1077,74 @@ function selectInput(kind: string): void {
   }
   for (const block of drawerBody.querySelectorAll<HTMLElement>("[data-for]")) {
     block.hidden = block.dataset.for !== kind;
+  }
+}
+
+function ensureBoardOption(select: HTMLSelectElement, value: string, label: string): void {
+  if (!value || [...select.options].some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label || value;
+  select.append(option);
+}
+
+async function scanBrainflowDevices(): Promise<void> {
+  const note = document.getElementById("cfg-ble-note");
+  const list = document.getElementById("cfg-ble-list");
+  const button = document.getElementById("cfg-ble-scan");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+  if (note) {
+    note.className = "hint";
+    note.textContent = "Scanning…";
+  }
+  try {
+    const body = await api<{ available: boolean; devices: BleDevice[]; error: string | null }>("/api/brainflow/devices");
+    if (note) {
+      note.className = body.error ? "form-note bad" : "hint";
+      note.textContent = body.error
+        ? body.error
+        : body.devices.length
+          ? `${body.devices.length} headset(s). Pick one to fill the board, MAC, and serial.`
+          : "No compatible headsets found.";
+    }
+    if (list) {
+      list.innerHTML = body.devices
+        .map((device) => {
+          const rssi = device.rssi == null ? "RSSI —" : `${device.rssi} dBm`;
+          return `<button type="button" data-ble="1" data-mac="${esc(device.mac)}" data-serial="${esc(device.serial)}" data-board="${esc(device.board)}" data-board-id="${device.board_id}" data-board-label="${esc(device.board_label)}" data-note="${esc(device.note)}">
+            <strong>${esc(device.name || device.mac || "Headset")}</strong>
+            <small>${esc(device.mac)} · ${esc(rssi)} · ${esc(device.board_label)} (${device.board_id})</small>
+          </button>`;
+        })
+        .join("");
+    }
+  } catch (error) {
+    if (note) {
+      note.className = "form-note bad";
+      note.textContent = error instanceof Error ? error.message : "Could not scan for devices.";
+    }
+  } finally {
+    if (button instanceof HTMLButtonElement) button.disabled = false;
+  }
+}
+
+function applyBleDevice(button: HTMLButtonElement): void {
+  const board = button.dataset.board ?? "";
+  const label = button.dataset.boardLabel ?? board;
+  const boardId = button.dataset.boardId ?? "";
+  const select = document.getElementById("cfg-board");
+  if (select instanceof HTMLSelectElement) {
+    ensureBoardOption(select, board, boardId ? `${label} (${boardId})` : label);
+    select.value = board;
+  }
+  const mac = document.getElementById("cfg-mac");
+  if (mac instanceof HTMLInputElement) mac.value = button.dataset.mac ?? "";
+  const serial = document.getElementById("cfg-serial");
+  if (serial instanceof HTMLInputElement) serial.value = button.dataset.serial ?? "";
+  const note = document.getElementById("cfg-ble-note");
+  if (note) {
+    note.className = "hint";
+    note.textContent = button.dataset.note || `Using ${label} (${boardId}).`;
   }
 }
 
@@ -1212,6 +1315,11 @@ drawerBody.addEventListener("click", (event) => {
     applySetup();
     return;
   }
+  const bleButton = target.closest("[data-ble]");
+  if (bleButton instanceof HTMLButtonElement) {
+    applyBleDevice(bleButton);
+    return;
+  }
   const inputButton = target.closest("[data-input]");
   if (inputButton instanceof HTMLButtonElement && inputButton.dataset.input) {
     selectInput(inputButton.dataset.input);
@@ -1228,6 +1336,10 @@ drawerBody.addEventListener("click", (event) => {
     for (const button of drawerBody.querySelectorAll<HTMLButtonElement>("[data-line]")) {
       button.classList.toggle("on", button === target);
     }
+    return;
+  }
+  if (target.id === "cfg-ble-scan") {
+    void scanBrainflowDevices();
     return;
   }
   if (target.id === "cfg-lsl-refresh") {

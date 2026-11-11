@@ -35,19 +35,25 @@ _BOARDS = {
 
 
 def resolve_board_id(board_ids: object, name: str) -> int:
-    """Resolve a short name against a BrainFlow ``BoardIds`` enum (or a stand-in)."""
+    """Resolve a short name, an enum name, or a numeric id against ``BoardIds``."""
 
-    key = name.strip().lower().replace("-", "_")
+    raw = name.strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    key = raw.lower().replace("-", "_")
     attrs = _BOARDS.get(key)
-    if attrs is None:
-        known = ", ".join(sorted(_BOARDS))
-        raise InputError(f"unknown BrainFlow board {name!r}; expected one of: {known}")
-    for attr in attrs:
-        if hasattr(board_ids, attr):
-            return int(getattr(board_ids, attr))
-    if key in {"muse_s_athena", "athena"}:
-        raise InputError("This BrainFlow build has no Muse S Athena board id. Install brainflow>=5.22.2.")
-    raise InputError(f"BrainFlow has no board id named {attrs[0]}")
+    if attrs is not None:
+        for attr in attrs:
+            if hasattr(board_ids, attr):
+                return int(getattr(board_ids, attr))
+        if key in {"muse_s_athena", "athena"}:
+            raise InputError("This BrainFlow build has no Muse S Athena board id. Install brainflow>=5.22.2.")
+        raise InputError(f"BrainFlow has no board id named {attrs[0]}")
+    for candidate in (raw.upper(), key.upper()):
+        if hasattr(board_ids, candidate):
+            return int(getattr(board_ids, candidate))
+    known = ", ".join(sorted(_BOARDS))
+    raise InputError(f"unknown BrainFlow board {name!r}; expected one of: {known}")
 
 
 class BrainFlowInput:

@@ -140,7 +140,7 @@ Both libraries are installed in the image and imported only when that input is s
 docker compose -f compose.yaml -f compose.host.yaml up --build
 ```
 
-That mounts `/var/run/dbus` and puts the process on the host network. The app then listens on port 8080 and UDP 5000 directly. BrainFlow board names: `synthetic`, `muse_s_athena` (also the older `MUSE_S_ANTHENA_BOARD` spelling), `muse_2`, `muse_s`, `muse_2016`. A missing Athena id asks you to upgrade BrainFlow.
+That mounts `/var/run/dbus` and puts the process on the host network. The app then listens on port 8080 and UDP 5000 directly. Setup's BrainFlow section lists the BrainFlow boards and can scan for nearby headsets (name, MAC, RSSI) via bleak or simpleble. Picking a `MuseS-` device fills the MAC, the serial (the advertised name), and `MUSE_S_ATHENA_BOARD` (67). Muse S and Athena share that advertisement, so switch the board to `muse_s` for an older Muse S. If the container cannot see Bluetooth, the scan says to run with `compose.host.yaml`. A missing Athena id asks you to upgrade BrainFlow.
 
 The LSL input reads one EEG inlet. Marker inlet, clock correction, and irregular rate 0 are still TODO.
 

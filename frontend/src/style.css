@@ -298,6 +298,7 @@ body.calm .u-legend { font-size: 1rem !important; }
   padding: 0.35rem 0.45rem;
 }
 .stack { display: grid; gap: 0.35rem; margin-bottom: 0.8rem; }
+.stack[hidden] { display: none; }
 .stack label { display: grid; gap: 0.2rem; color: var(--muted); font-size: 0.85rem; }
 h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
 .band-row { grid-template-columns: 1.3fr 0.7fr 0.7fr 2.6rem auto; }
@@ -310,6 +311,10 @@ h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
 .choice strong, .choice small { display: block; }
 .choice small { color: var(--muted); font-size: 0.78rem; font-weight: 400; }
 .choice.on { background: #1e3a5f; border-color: var(--accent); }
+.device-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.device-list button { text-align: left; background: #0c1017; }
+.device-list strong, .device-list small { display: block; }
+.device-list small { color: var(--muted); font-size: 0.78rem; font-weight: 400; }
 .active-line { margin: 0.2rem 0 0.6rem; font-variant-numeric: tabular-nums; }
 .form-note { min-height: 1.4rem; margin: 0.6rem 0 0.4rem; }
 .form-note.ok { color: #bbf7d0; }

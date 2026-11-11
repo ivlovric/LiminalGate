@@ -10,6 +10,7 @@ import yaml
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
+from liminalgate.brainflow_scan import list_boards, scan_headsets
 from liminalgate.catalog import discover_lsl, playback_files
 from liminalgate.errors import ProfileError
 from liminalgate.hub import Hub
@@ -83,6 +84,19 @@ async def lsl_streams() -> dict:
 def list_playback_files(hub: Hub = Depends(get_hub)) -> dict:
     examples = Path("examples")
     return {"files": playback_files(hub.settings.data_dir, examples if examples.is_dir() else None)}
+
+
+@router.get("/brainflow/boards", tags=["config"], summary="BrainFlow boards for the Setup dropdown")
+def brainflow_boards() -> dict:
+    return {"boards": list_boards()}
+
+
+@router.get("/brainflow/devices", tags=["config"], summary="Nearby Muse and other BrainFlow BLE headsets")
+async def brainflow_devices(timeout: float = 5.0) -> dict:
+    """Scan with bleak or simpleble. A missing adapter names compose.host.yaml."""
+
+    bounded = min(8.0, max(1.0, float(timeout)))
+    return await asyncio.to_thread(scan_headsets, bounded)
 
 
 @router.get("/config", tags=["config"], summary="Runtime input configuration")
