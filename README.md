@@ -75,7 +75,11 @@ flowchart LR
   Rec --> Disk[(/data sessions)]
 ```
 
-One input runs at a time. Samples go through a ring buffer. A sliding Welch PSD (default 4 s window, 0.25 s hop, Hann, no notch) produces absolute power in µV² and relative power over a configurable range (default 1–45 Hz). Band edges are inclusive, so a 5.5–6 Hz band contains the 6 Hz bin. Ratio expressions such as `theta/delta` use a small parser (no `eval`). The browser gets a decimated display stream; recording keeps every raw sample.
+One input runs at a time. Samples go through a ring buffer. A sliding Welch PSD produces absolute power in µV² and relative power over a configurable range (default 1–45 Hz). The spectrum chart uses a 4 s segment with 50% overlap on the good EEG channels only, from 1–45 Hz. Band edges are inclusive, so a 5.5–6 Hz band contains the 6 Hz bin. Ratio expressions such as `theta/delta` use a small parser (no `eval`). The browser gets a decimated display stream; recording keeps every raw sample.
+
+The EEG chart is filtered for display only: a causal high-pass at 1 Hz, a low-pass at 45 Hz, and a notch at the configured powerline. **Filtered** is the default (Mind Monitor's view). **Raw** is the unfiltered ADC. AUX channels are kept on the trace and left out of bands and the spectrum. A channel is also left out when horseshoe or `is_good` says it is bad, when it is flat, or when samples sit on the ADC rail (near 0 µV, or at the top of the range). Athena's 14-bit rail is about 1450 µV; the older FAQ range tops out at 1682 µV. The ~800 µV baseline on an unfiltered trace is that unsigned midpoint, not a scale error.
+
+The top chart is absolute band power over time for delta, theta, alpha, beta, and gamma, in log10 µV² (Bels), averaged over the good channels. If Mind Monitor is also sending `/muse/elements/*_absolute`, those device values are drawn as dashed lines. OSC bursts are paced on a 1/fs sample clock so a packet of samples is not stacked on one timestamp, and a real pause becomes a gap in the line instead of a straight stroke across it.
 
 Markers come from the buttons, hotkeys, `POST /api/markers`, and OSC `/Marker/N`. Blink and jaw clench are separate event types, debounced to 300 ms.
 
@@ -100,7 +104,7 @@ data/sub-<subject>/ses-<YYYYMMDDTHHMMSS>/
 
 `session.json` records the device settings, the profile, notes, and `eeg_scale`. XDF is not written in v0.1 (see the TODO in `liminalgate/recording.py`).
 
-Powerline frequency is stored as metadata only. Raw EEG is not filtered.
+Powerline frequency is metadata in the session and the frequency of the display notch. Recorded EEG is not filtered.
 
 ## Microvolt scale
 

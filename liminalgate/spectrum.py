@@ -13,12 +13,21 @@ from scipy.signal import welch
 _trapz = getattr(np, "trapezoid", None) or np.trapz
 
 
-def welch_psd(data: np.ndarray, fs: float) -> tuple[np.ndarray, np.ndarray] | None:
-    """Return ``(freqs, psd)`` with ``psd`` shaped ``(n_freqs, n_channels)``."""
+def welch_psd(
+    data: np.ndarray,
+    fs: float,
+    segment_sec: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return ``(freqs, psd)`` with ``psd`` shaped ``(n_freqs, n_channels)``.
+
+    ``segment_sec`` is the Welch segment. Overlap is 50 percent. A 4 s segment
+    on a longer window averages several segments, which is what the spectrum
+    chart uses.
+    """
 
     if data.ndim != 2 or data.shape[0] < 16 or fs <= 0:
         return None
-    nperseg = min(data.shape[0], max(16, int(fs * 2)))
+    nperseg = min(data.shape[0], max(16, int(fs * segment_sec)))
     freqs, psd = welch(
         data,
         fs=fs,

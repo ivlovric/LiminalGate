@@ -41,9 +41,30 @@
       <span id="save-path" class="muted"></span>
     </div>
     <main>
+      <section class="panel timeline">
+        <header>
+          <h2>Band power</h2>
+          <span class="muted">log10 µV², good channels</span>
+          <div class="seg" id="minute-toggle">
+            <button type="button" data-minutes="1">1 min</button>
+            <button type="button" data-minutes="2" class="on">2 min</button>
+            <button type="button" data-minutes="5">5 min</button>
+          </div>
+        </header>
+        <div id="timeline-plot" class="plot"></div>
+      </section>
       <section class="panel traces">
         <header>
-          <h2>Raw EEG</h2>
+          <h2 id="eeg-title">EEG</h2>
+          <div class="seg" id="trace-mode">
+            <button type="button" data-mode="filtered" class="on">Filtered</button>
+            <button type="button" data-mode="raw">Raw</button>
+          </div>
+          <div class="seg" id="trace-window">
+            <button type="button" data-window="2">2 s</button>
+            <button type="button" data-window="5" class="on">5 s</button>
+            <button type="button" data-window="10">10 s</button>
+          </div>
           <span id="eeg-meta" class="muted"></span>
         </header>
         <div id="eeg-plot" class="plot"></div>
@@ -51,7 +72,7 @@
       <section class="panel spectrum">
         <header>
           <h2>Spectrum</h2>
-          <span class="muted">log10 µV²/Hz</span>
+          <span class="muted">1–45 Hz · good channels</span>
         </header>
         <div id="spec-plot" class="plot"></div>
       </section>

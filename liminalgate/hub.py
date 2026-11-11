@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from liminalgate import __version__
 from liminalgate.audio_out import ServerTone
+from liminalgate.display_filter import DisplayFilter, gap_before
 from liminalgate.errors import InputError, ProfileError, SessionError
 from liminalgate.feedback import FeedbackEngine
 from liminalgate.heartrate import HeartRateEstimator
@@ -66,6 +67,7 @@ class Hub:
         self.store = ProfileStore(settings.data_dir / "profiles")
         self.profile = self._load_initial_profile()
         self.pipeline = Pipeline(self.profile, settings.eeg_fs)
+        self.display_filter = DisplayFilter(settings.eeg_fs, settings.powerline_hz)
         self.feedback = FeedbackEngine(self.profile.feedback)
         self.hr = HeartRateEstimator(fs=64.0)
         self.tone = ServerTone()
@@ -81,7 +83,9 @@ class Hub:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._accepting = False
         self._consume_task: asyncio.Task[None] | None = None
-        self._pending: list[tuple[float, tuple[float, ...]]] = []
+        self._pending: list[tuple[float, tuple[float, ...], tuple[float, ...], bool]] = []
+        self._gap_hold = False
+        self._last_eeg_t: float | None = None
         self._decim_count = 0
         self._decim = 4
         self._eeg_channels: tuple[str, ...] = ()
@@ -148,6 +152,10 @@ class Hub:
         await self.stop_input()
         async with self.lock:
             self.pipeline.reset(fs=self.settings.eeg_fs)
+            self.display_filter.configure(self.settings.eeg_fs, self.settings.powerline_hz)
+            self.display_filter.reset()
+            self._last_eeg_t = None
+            self._gap_hold = False
             self.hr.reset()
             self.samples_seen = 0
             self.dropped = 0
@@ -186,6 +194,7 @@ class Hub:
         save_config(self.settings)
         if self.settings.profile != self.profile.name:
             self.activate_profile(self.store.load(self.settings.profile))
+        self.display_filter.configure(self.pipeline.fs, self.settings.powerline_hz)
         await self.restart_input()
         self._sync_audio()
         return self.settings.public_config()
@@ -354,7 +363,7 @@ class Hub:
             self._record(item)
             return
         if item.stream == "quality":
-            self.pipeline.set_quality(item.values)
+            self.pipeline.set_quality(item.channels, item.values)
             return
         if item.stream == "device_band":
             self.pipeline.set_device_band(item.channels, item.values)
@@ -372,15 +381,22 @@ class Hub:
     def _handle_eeg(self, item: Sample) -> None:
         if item.rate and self.samples_seen < 8 and abs(item.rate - self.pipeline.fs) / item.rate > 0.05:
             self.pipeline.set_fs(item.rate)
+            self.display_filter.configure(self.pipeline.fs, self.settings.powerline_hz)
             self._decim = self._decimation()
+        # Raw sample is what gets recorded and what the spectrum sees.
         self.pipeline.add_eeg(item.t, item.channels, item.values)
         self._record(item)
+        filtered = self.display_filter.apply(item.channels, item.values)
+        gap = gap_before(self._last_eeg_t, item.t, self.pipeline.fs)
+        self._last_eeg_t = item.t
+        self._gap_hold = self._gap_hold or gap
         self.samples_seen += 1
         self._eeg_channels = item.channels
         self._decim_count += 1
         if self._decim_count >= self._decim:
             self._decim_count = 0
-            self._pending.append((item.t, item.values))
+            self._pending.append((item.t, item.values, filtered, self._gap_hold))
+            self._gap_hold = False
 
     def _record(self, item: Sample) -> None:
         if self.recorder is not None and self.recorder.active:
@@ -425,15 +441,21 @@ class Hub:
         self.publish(payload, droppable=False)
 
     def _display_message(self) -> dict:
-        samples = [[round(float(value), 3) for value in values] for _stamp, values in self._pending]
+        points = [
+            {
+                "t": round(stamp, 4),
+                "raw": [round(float(value), 3) for value in raw],
+                "filtered": [round(float(value), 3) for value in filtered],
+                "gap": gap,
+            }
+            for stamp, raw, filtered, gap in self._pending
+        ]
         return {
             "type": "display",
             "t": self._pending[-1][0],
             "eeg": {
                 "channels": list(self._eeg_channels),
-                "t0": self._pending[0][0],
-                "fs": self.settings.display_hz,
-                "samples": samples,
+                "points": points,
             },
             "quality": self.pipeline.quality,
             "hr": None if self._hr_value is None else round(self._hr_value, 1),

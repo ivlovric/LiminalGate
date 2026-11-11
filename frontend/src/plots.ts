@@ -2,6 +2,11 @@ import uPlot from "uplot";
 
 const COLORS = ["#7aa2ff", "#5dcaa5", "#e0b15a", "#e07a8a", "#c4b5fd", "#8fd18a"];
 
+export interface TimedPoint {
+  t: number;
+  values: (number | null)[];
+}
+
 function sizeOf(el: HTMLElement): { width: number; height: number } {
   const rect = el.getBoundingClientRect();
   return {
@@ -14,43 +19,52 @@ export class RollingPlot {
   private plot: uPlot | null = null;
   private key = "";
   private xs: number[] = [];
-  private ys: number[][] = [];
+  private ys: (number | null)[][] = [];
+  private dashes: boolean[] = [];
   private observer: ResizeObserver;
 
   constructor(
     private el: HTMLElement,
     private windowSec: number,
+    private colors: string[] = COLORS,
   ) {
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(el);
   }
 
-  push(channels: string[], t0: number, sampleHz: number, samples: number[][]): void {
+  setWindow(seconds: number): void {
+    this.windowSec = seconds;
+    this.trim();
+    this.draw();
+  }
+
+  reset(): void {
+    this.xs = [];
+    this.ys = this.ys.map(() => []);
+    this.draw();
+  }
+
+  pushTimed(channels: string[], points: TimedPoint[], dashes: boolean[] = []): void {
     if (!channels.length) {
       return;
     }
     const signature = channels.join("|");
     if (signature !== this.key) {
       this.key = signature;
+      this.dashes = dashes;
       this.xs = [];
       this.ys = channels.map(() => []);
       this.mount(channels);
     }
-    const dt = sampleHz > 0 ? 1 / sampleHz : 0.016;
-    samples.forEach((row, index) => {
-      this.xs.push(t0 + index * dt);
-      channels.forEach((_, channel) => {
-        const value = row[channel];
-        this.ys[channel].push(typeof value === "number" ? value : Number.NaN);
+    for (const point of points) {
+      this.xs.push(point.t);
+      channels.forEach((_, index) => {
+        const value = point.values[index];
+        this.ys[index].push(typeof value === "number" && Number.isFinite(value) ? value : null);
       });
-    });
-    const last = this.xs[this.xs.length - 1] ?? 0;
-    const min = last - this.windowSec;
-    while (this.xs.length > 2 && this.xs[0] < min) {
-      this.xs.shift();
-      this.ys.forEach((series) => series.shift());
     }
-    this.plot?.setData([this.xs, ...this.ys]);
+    this.trim();
+    this.draw();
   }
 
   setSeries(x: number[], y: number[]): void {
@@ -58,10 +72,27 @@ export class RollingPlot {
     this.ys = [y];
     if (!this.plot || this.key !== "spectrum") {
       this.key = "spectrum";
+      this.dashes = [];
       this.mount(["mean"]);
       return;
     }
     this.plot.setData([x, y]);
+  }
+
+  private trim(): void {
+    if (!this.xs.length) {
+      return;
+    }
+    const last = this.xs[this.xs.length - 1] ?? 0;
+    const min = last - this.windowSec;
+    while (this.xs.length > 2 && this.xs[0] < min) {
+      this.xs.shift();
+      this.ys.forEach((series) => series.shift());
+    }
+  }
+
+  private draw(): void {
+    this.plot?.setData([this.xs, ...this.ys] as uPlot.AlignedData);
   }
 
   private mount(channels: string[]): void {
@@ -71,8 +102,10 @@ export class RollingPlot {
     channels.forEach((label, index) => {
       series.push({
         label,
-        stroke: COLORS[index % COLORS.length],
-        width: 1.6,
+        stroke: this.colors[index % this.colors.length],
+        width: this.dashes[index] ? 1.2 : 1.6,
+        dash: this.dashes[index] ? [6, 4] : undefined,
+        spanGaps: false,
         points: { show: false },
       });
     });
@@ -97,7 +130,7 @@ export class RollingPlot {
         legend: { show: true },
         cursor: { show: true, drag: { x: false, y: false } },
       },
-      [this.xs, ...this.ys],
+      [this.xs, ...this.ys] as uPlot.AlignedData,
       this.el,
     );
   }
