@@ -1,0 +1,14 @@
+# Direct dependencies, pinned.
+# numpy 1.26 and scipy 1.14 ship baseline manylinux wheels with runtime CPU
+# dispatch, so the image still runs on a 2012 Ivy Bridge CPU (AVX, no AVX2).
+fastapi==0.115.14
+uvicorn==0.34.3
+# Required by the live /ws endpoint. Uvicorn does not install it on its own.
+websockets==17.4
+numpy==1.26.4
+scipy==1.14.1
+python-osc==1.9.3
+pyyaml==6.0.2
+pyedflib==0.1.42
+pydantic==2.10.6
+pydantic-settings==2.7.1

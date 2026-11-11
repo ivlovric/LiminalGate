@@ -1,0 +1,3 @@
+# Imported only when the matching input is selected.
+brainflow==5.22.2
+pylsl==1.18.6

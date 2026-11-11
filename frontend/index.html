@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>LiminalGate</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <h1>LiminalGate</h1>
+          <p class="tag">live neuro gateway</p>
+        </div>
+      </div>
+      <div id="conn" class="pill">connecting</div>
+      <div id="input-label" class="muted"></div>
+      <div id="horseshoe" class="hsi" aria-label="signal quality"></div>
+      <div class="metric">
+        <span id="hr">—</span>
+        <small>bpm</small>
+      </div>
+      <div class="metric">
+        <span id="clock">idle</span>
+        <small id="clock-label">session</small>
+      </div>
+      <div class="actions">
+        <button type="button" id="tone-btn">Enable tone</button>
+        <button type="button" id="record-btn" class="primary">Record</button>
+        <button type="button" id="profile-btn">Profile</button>
+        <button type="button" id="setup-btn">Setup</button>
+      </div>
+    </header>
+    <div class="subbar">
+      <label>Subject <input id="subject" value="01" maxlength="32" autocomplete="off" /></label>
+      <label>Task <input id="task" value="rest" maxlength="32" autocomplete="off" /></label>
+      <label class="grow">Notes <input id="notes" maxlength="240" autocomplete="off" /></label>
+      <span id="save-path" class="muted"></span>
+    </div>
+    <main>
+      <section class="panel traces">
+        <header>
+          <h2>Raw EEG</h2>
+          <span id="eeg-meta" class="muted"></span>
+        </header>
+        <div id="eeg-plot" class="plot"></div>
+      </section>
+      <section class="panel spectrum">
+        <header>
+          <h2>Spectrum</h2>
+          <span class="muted">log10 µV²/Hz</span>
+        </header>
+        <div id="spec-plot" class="plot"></div>
+      </section>
+      <section class="panel bands">
+        <header>
+          <h2>Bands</h2>
+          <span class="muted">relative power</span>
+        </header>
+        <div id="band-bars" class="bars"></div>
+      </section>
+      <section class="panel ratios">
+        <header>
+          <h2>Ratios</h2>
+          <span id="profile-name" class="muted"></span>
+        </header>
+        <div id="ratios" class="ratio-list"></div>
+        <div id="tone-readout" class="tone">Tone off</div>
+        <div class="meter" aria-hidden="true"><div id="tone-meter"></div></div>
+      </section>
+      <section class="panel markers">
+        <header>
+          <h2>Markers</h2>
+          <span class="muted">hotkeys work outside text fields · blink and jaw clench show here too</span>
+        </header>
+        <div id="marker-track" class="track"></div>
+        <div id="marker-buttons" class="marker-buttons"></div>
+      </section>
+    </main>
+    <aside id="drawer" class="drawer" hidden>
+      <div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <header>
+          <h2 id="drawer-title">Profile</h2>
+          <button type="button" id="drawer-close">Close</button>
+        </header>
+        <div id="drawer-body"></div>
+      </div>
+    </aside>
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
