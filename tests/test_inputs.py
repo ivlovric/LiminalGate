@@ -8,7 +8,7 @@ from liminalgate.errors import InputError
 from liminalgate.inputs.brainflow_input import resolve_board_id
 from liminalgate.inputs.lsl_input import LSLInput
 from liminalgate.inputs.osc_mindmonitor import OscMindMonitorInput, known_osc_address, parse_message
-from liminalgate.inputs.playback import ColumnMap, PlaybackInput, items_from_row
+from liminalgate.inputs.playback import ColumnMap, PlaybackInput, inspect_csv, items_from_row
 from liminalgate.signals import Event, Sample
 from pythonosc.udp_client import SimpleUDPClient
 
@@ -113,7 +113,8 @@ def test_playback_mind_monitor_and_native_csv(tmp_path: Path):
     mind_items = asyncio.run(collect(mind))
     eeg = [item for item in mind_items if isinstance(item, Sample) and item.stream == "eeg"]
     assert len(eeg) == 2
-    assert eeg[0].values[4] == 8.0
+    assert eeg[0].channels == ("TP9", "AF7", "AF8", "TP10")
+    assert eeg[0].values == (1.0, 2.0, 3.0, 4.0)
     assert any(isinstance(item, Event) and item.osc == 2 for item in mind_items)
     assert any(isinstance(item, Sample) and item.stream == "quality" for item in mind_items)
 
@@ -137,6 +138,59 @@ def test_playback_missing_file(tmp_path: Path):
 
     with pytest.raises(InputError, match="not found"):
         asyncio.run(run())
+
+
+def test_playback_ignores_aux_reads_markers_and_warns(tmp_path: Path):
+    path = tmp_path / "sub-01_ses-1_task-rest_eeg.csv"
+    rows = ["timestamp,TP9,AF7,AF8,TP10,AUX4,Elements"]
+    for index in range(8):
+        stamp = 100.0 + index / 256.0
+        if index == 4:
+            stamp = 100.0 - 0.15
+        rows.append(f"{stamp:.6f},1,2,3,4,1450,{'blink' if index == 3 else ''}")
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    events = tmp_path / "sub-01_ses-1_task-rest_events.tsv"
+    events.write_text(
+        "onset\tduration\ttrial_type\tvalue\tsource\tsample\n0.01\t0\tmarker\tthreshold\tui\t2\n",
+        encoding="utf-8",
+    )
+    info = inspect_csv(path)
+    assert info["eeg"] is True
+    assert "Short file" in info["warning"]
+
+    slow = tmp_path / "slow_eeg.csv"
+    slow_rows = ["TimeStamp,RAW_TP9,RAW_AF7,RAW_AF8,RAW_TP10"]
+    for index in range(6):
+        slow_rows.append(f"2026-11-11 12:00:0{index}.000,1,2,3,4")
+    slow.write_text("\n".join(slow_rows) + "\n", encoding="utf-8")
+    slow_info = inspect_csv(slow)
+    assert slow_info["rate"] < 2
+    assert "too slow" in slow_info["warning"]
+
+    async def collect():
+        found: list = []
+        plugin = PlaybackInput(str(path), speed=0, loop=False)
+        plugin.seek(2 / plugin.rate if plugin.rate else 0)
+        await plugin.start(found.append)
+        for _ in range(100):
+            if plugin._task is not None and plugin._task.done():
+                break
+            await asyncio.sleep(0.01)
+        await plugin.stop()
+        return found
+
+    items = asyncio.run(collect())
+    eeg = [item for item in items if isinstance(item, Sample) and item.stream == "eeg"]
+    assert eeg and len(eeg[0].values) == 4
+    assert all(eeg[index].t < eeg[index + 1].t for index in range(len(eeg) - 1))
+    names = [item.name for item in items if isinstance(item, Event)]
+    assert "threshold" in names
+    assert "blink" in names
+    plugin = PlaybackInput(str(path), speed=0, loop=False)
+    plugin.pause()
+    assert plugin.state["paused"] is True
+    plugin.resume()
+    assert plugin.state["paused"] is False
 
 
 def test_brainflow_board_aliases():

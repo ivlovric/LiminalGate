@@ -78,6 +78,7 @@ class SampleClock:
         self._last: tuple[float, ...] | None = None
         self._last_wall = 0.0
         self._stamp_wall: float | None = None
+        self._last_emit: float | None = None
 
     def configure(self, fs: float) -> None:
         if abs(fs - self.fs) < 0.01:
@@ -85,6 +86,7 @@ class SampleClock:
         self.fs = float(fs)
         self.step = 1.0 / self.fs if self.fs > 0 else 0.0
         self.next_t = None
+        self._last_emit = None
 
     def duplicate(self, values: tuple[float, ...], now: float) -> bool:
         """A second copy of the same datagram inside a fraction of a sample."""
@@ -104,9 +106,18 @@ class SampleClock:
         # Messages inside 50 ms of each other are one burst or a paced sample.
         # A longer hole is a real gap: start the clock at this arrival.
         continued = previous is not None and self.next_t is not None and now - previous <= 0.05
-        start = self.next_t if continued else now - (count - 1) * step
+        if continued and self.next_t is not None:
+            start = self.next_t
+        else:
+            start = now - (count - 1) * step
+        # A burst schedules samples ahead of the wall clock. The next packet can
+        # then look like a pause and snap `now` backwards over those samples.
+        # Never emit a time earlier than the previous sample.
+        if self._last_emit is not None and start < self._last_emit + step * 0.5:
+            start = self._last_emit + step
         times = [start + index * step for index in range(count)]
         self.next_t = times[-1] + step
+        self._last_emit = times[-1]
         return times
 
 

@@ -1,10 +1,8 @@
 # LiminalGate
 
-Open, self-hosted neuro gateway for live EEG recording, custom brainwave bands, markers, and biofeedback across brain-state transitions. It is generic: any band name and any frequency range, not a single-band tool.
+Open, self-hosted neuro gateway for live EEG, custom bands, markers, and biofeedback. v0.4 is one container. A browser on the same LAN (laptop, phone, or a TV) shows the dashboard. No telemetry. An optional access token can close the LAN API.
 
-v0.1 runs as one container. A browser on the same LAN (laptop, phone, or a TV) shows the live dashboard. The default input is a synthetic theta-dominant signal, so the app is usable with no headset. Mind Monitor OSC is the hardware path that must work.
-
-No telemetry. An optional access token can close the LAN API.
+The default input is a synthetic theta-dominant signal, so the app runs with no headset. Mind Monitor OSC is the path that is meant to work with a Muse.
 
 ## Quick start
 
@@ -12,26 +10,24 @@ No telemetry. An optional access token can close the LAN API.
 docker compose up --build
 ```
 
-Open `http://<this-machine>:8080`. The first view is the band-power chart (about 5 minutes, updating about twice a second), the relative band bars, and markers. EEG and the spectrum are collapsed; ratios and the session card are hidden until you open **View**. **Calm** leaves only the band chart and the signal-quality dots, for a TV.
+Open `http://<this-machine>:8080`.
 
-The EEG lanes default to 10 seconds. **Filtered** is the 1–45 Hz display filter plus the powerline notch. **Raw** is the headset stream as received, including the ~800 µV offset. Recording is always raw.
+The first view is the band-power chart (about 5 minutes), the relative band bars, and markers. EEG, the spectrum, and heart rate are folded. Ratios, the session card, and recordings stay hidden until you open **View**. **Calm** leaves the band chart and the signal-quality dots, for a TV.
 
-Click **View → Tone** once (browsers block audio until a click). The hypnagogic profile maps the 5.5–6 Hz peak onto a tone and fades it if alpha relative power gets high. The readout under the ratios shows `Tone on · Hz · volume %`.
+**Filtered** EEG is a 1–45 Hz display filter plus the powerline notch. **Raw** is the stream as received, including the ~800 µV offset. Recording is always raw.
 
-Click **Record**, wait a few seconds, click **Stop**. The session lands in the `liminalgate-data` volume as CSV plus EDF+ (markers are EDF+ annotations). Copy it out with:
+Click **View → Tone** once (browsers block audio until a click). Click **Record**, then **Stop**. The session is written under the `liminalgate-data` volume. Open **View → Recordings** to download it, or copy the volume out:
 
 ```bash
 docker compose cp liminalgate:/data ./recordings
 ```
 
-Or bind-mount a folder instead of the named volume:
+Bind-mount a folder instead of the named volume if you prefer. The directory must be writable by uid 1000.
 
 ```yaml
 volumes:
   - ./recordings:/data
 ```
-
-The directory must be writable by uid 1000.
 
 To publish only on this machine:
 
@@ -41,57 +37,81 @@ LIMINALGATE_BIND_OSC=127.0.0.1:5000:5000/udp \
 docker compose up --build
 ```
 
-### Mind Monitor OSC
+## Inputs
 
-1. On the phone, open Mind Monitor and set **OSC Stream Target** to the IP of the computer running LiminalGate and port **5000** (UDP).
-2. In the dashboard, open **Setup**, set Input to `osc`, and click **Apply**. UDP 5000 is published even while the synthetic input is selected, so you do not have to recreate the container to switch.
-3. The expected paths are `/muse/eeg` (TP9, AF7, AF8, TP10, optional AUX, µV), `/muse/acc`, `/muse/gyro`, `/muse/ppg`, `/muse/elements/*_absolute`, `/muse/elements/horseshoe`, `/muse/elements/blink`, `/muse/elements/jaw_clench`, and `/Marker/1` … `/Marker/5`. See the [Mind Monitor FAQ](https://mind-monitor.com/FAQ.php). Horseshoe 1 is good, 2 is medium, 4 is bad; 3 is treated as poor. Channels with horseshoe ≥ 4 are left out of the mean.
+One input runs at a time. Switch it in **Setup** and click **Apply**. The choice is saved in `data/config.json`, and that file overrides the environment variables below the next time the container starts (not the token, bind host, or listen port).
+
+| Input | What it does | Main settings |
+| --- | --- | --- |
+| OSC | Mind Monitor over UDP | Port, bind host |
+| BrainFlow | Headset over BLE, including Muse S Athena | Board, MAC, serial, scan |
+| LSL | One Lab Streaming Layer EEG inlet | Stream name |
+| Playback | Replay a CSV | File, speed, loop |
+| Synthetic | Built-in demo, no headset | none |
+
+### OSC / Mind Monitor
+
+`LIMINALGATE_INPUT=osc`, `LIMINALGATE_OSC_PORT` (default 5000), `LIMINALGATE_OSC_HOST` (default `0.0.0.0`).
+
+1. In Mind Monitor set **OSC Stream Target** to this computer's IP and the published UDP port.
+2. In Setup choose **OSC** and Apply. UDP is published even while another input is selected, so you do not recreate the container to switch.
+3. Setup shows a packet count and the OSC paths that have actually arrived.
+
+Expected paths: `/muse/eeg` (TP9, AF7, AF8, TP10, then optional AUX, in µV), `/muse/acc`, `/muse/gyro`, `/muse/ppg`, `/muse/optics`, `/muse/batt`, `/muse/elements/*_absolute`, `/muse/elements/horseshoe`, `/muse/elements/blink`, `/muse/elements/jaw_clench`, and `/Marker/1` … `/Marker/5`. See the [Mind Monitor FAQ](https://mind-monitor.com/FAQ.php). Horseshoe 1 is good, 2 is medium, 4 is bad; 3 is treated as poor.
+
+Record at a constant interval. A 1-second export is about one row per second and is not an EEG stream.
+
+### BrainFlow
+
+`LIMINALGATE_INPUT=brainflow`, `LIMINALGATE_BRAINFLOW_BOARD` (default `synthetic`), `LIMINALGATE_BRAINFLOW_MAC`, `LIMINALGATE_BRAINFLOW_SERIAL`, `LIMINALGATE_BRAINFLOW_OTHER_INFO`.
+
+Setup lists the boards this BrainFlow build knows. **Scan for devices** reports name, MAC, and RSSI. A `MuseS-` advertisement fills the MAC, the serial (the advertised name), and `MUSE_S_ATHENA_BOARD` (67). Muse S and Athena share that name, so switch the board to `muse_s` for an older Muse S. `Muse-` maps to Muse 2 (`MUSE_2_BOARD`, 38).
+
+BLE does not cross the default Docker bridge. Use `compose.host.yaml` (below). If the container cannot see an adapter, the scan says: `Bluetooth isn't reachable from this container. Run with compose.host.yaml.`
+
+### LSL
+
+`LIMINALGATE_INPUT=lsl`, `LIMINALGATE_LSL_NAME` (empty uses the first EEG stream).
+
+**Find streams** resolves for a short time. A missing `pylsl` returns an empty list and a message. LSL multicast needs host networking, same as BLE. A marker inlet and clock correction are still to do.
 
 ### Playback
 
-`examples/demo.csv` is eight seconds of the synthetic mix in Mind Monitor column names, with a marker on the 2 second row. In Setup set Input to `playback`, Playback file to the path inside the container (copy the file into `/data` first), and Apply.
+`LIMINALGATE_INPUT=playback`, `LIMINALGATE_PLAYBACK_PATH`, `LIMINALGATE_PLAYBACK_SPEED` (1 follows the sample rate, 0 plays as fast as possible), `LIMINALGATE_PLAYBACK_LOOP` (default on).
 
-## Architecture
+The file picker lists CSVs under the data directory and `examples/`. Files without TP9, AF7, AF8, and TP10 are labeled `(not EEG)` and cannot be selected. **Upload a CSV** writes the file to `data/uploads/`.
 
-```mermaid
-flowchart LR
-  subgraph inputs [Inputs]
-    OSC[Mind Monitor OSC UDP]
-    BF[BrainFlow]
-    LSL[LSL inlet]
-    Play[Playback CSV]
-    Syn[Synthetic]
-  end
-  Hub[Hub]
-  Pipe[Welch bands and ratios]
-  Rec[CSV and EDF+ recorder]
-  FB[Feedback rules]
-  UI[Browser dashboard]
-  inputs --> Hub
-  Hub --> Pipe
-  Hub --> Rec
-  Pipe --> FB
-  Hub -->|WebSocket| UI
-  UI -->|REST| Hub
-  FB -->|volume and Hz| UI
-  Rec --> Disk[(/data sessions)]
+While a file is playing, the header pill names the file, the position, the duration, and the loop count. Pause, resume, restart, and the seek slider sit next to it. `POST /api/playback/control` takes `{"action": "pause"|"resume"|"restart"|"seek", "position": seconds}`.
+
+AUX columns are stored in the recording and left out of the EEG lanes, so a railed AUX channel does not set the scale. Mind Monitor's `Elements` column and a sibling `*_events.tsv` (LiminalGate's own markers, matched by sample index) are emitted as markers.
+
+A file shorter than about 30 seconds warns that loop will restart it that often. A file slower than about 8 rows/s warns that Mind Monitor needs a Constant interval.
+
+`examples/demo.csv` is a short synthetic mix in Mind Monitor column names. Copy it into `/data` before selecting it inside the container.
+
+### Synthetic
+
+`LIMINALGATE_INPUT=synthetic`. Nothing else to set. Apply starts the built-in signal, including a PPG-like pulse so the heart card has something to read.
+
+## Recordings
+
+**View → Recordings** lists `sub-*/ses-*` under the data directory: local start time, duration, EEG sample count, and which streams were written (eeg, edf, events, ppg, hr, optics, battery, acc, gyro).
+
+- **Download zip** is the whole session: EEG CSV, EDF when present, events TSV, physio (PPG, heart rate, optics, battery), motion (accelerometer, gyroscope), and the JSON sidecars.
+- Each file can be downloaded on its own.
+- **Delete** asks for confirmation. The session that is recording right now cannot be deleted.
+
+The same routes are under `/api/sessions`. When `LIMINALGATE_TOKEN` is set, they require `Authorization: Bearer`, `X-Liminal-Token`, or `?token=`. The dashboard stores the token in `localStorage` and sends it on downloads. `/api/health` stays open.
+
+```
+GET    /api/sessions
+GET    /api/sessions/{subject}/{session_id}/archive
+GET    /api/sessions/{subject}/{session_id}/files/{relative path}
+DELETE /api/sessions/{subject}/{session_id}
+POST   /api/playback/upload?name=clip.csv
 ```
 
-One input runs at a time. Samples go through a ring buffer. A sliding Welch PSD produces absolute power in µV² and relative power over a configurable range (default 1–45 Hz). The spectrum chart uses a 4 s segment with 50% overlap on the good EEG channels only, from 1–45 Hz. Band edges are inclusive, so a 5.5–6 Hz band contains the 6 Hz bin. Ratio expressions such as `theta/delta` use a small parser (no `eval`). The browser gets a decimated display stream; recording keeps every raw sample.
-
-The EEG chart is filtered for display only: a causal high-pass at 1 Hz, a low-pass at 45 Hz, and a notch at the configured powerline. **Filtered** is the default (Mind Monitor's view). **Raw** is the unfiltered ADC. AUX channels are kept on the trace and left out of bands and the spectrum. A channel is also left out when horseshoe or `is_good` says it is bad, when it is flat, or when samples sit on the ADC rail (near 0 µV, or at the top of the range). Athena's 14-bit rail is about 1450 µV; the older FAQ range tops out at 1682 µV. The ~800 µV baseline on an unfiltered trace is that unsigned midpoint, not a scale error.
-
-Heart rate uses `/muse/ppg` when that is all Mind Monitor sends. Each channel (ambient, IR, red, and any extra Athena channels) is band-passed around 0.7–3.5 Hz and the strongest one is peak-detected. A headset heart-rate path such as `/muse/elements/heart_rate` is used when it arrives. The header reads `no PPG data` until a waveform or device rate shows up, then `computing` until a pulse locks. `/muse/batt` carries battery level and temperature in °C; the Heart card shows °C only after that value arrives. Setup lists the OSC paths actually received. Blink and jaw-clench marks stay off unless you turn them on. The built-in marker keys are vibracije, puls tijela, izlazak, budjenje, and ostalo.
-
-The top chart is absolute band power over time for delta, theta, alpha, beta, and gamma, in log10 µV² (Bels), averaged over the good channels and smoothed with about a one-second time constant. Windows are 1, 5, 15, or 30 minutes (5 is the default). If Mind Monitor is also sending `/muse/elements/*_absolute`, those device values are drawn as dashed lines. The EEG window choices are 5, 10, and 30 seconds. Charts keep their place in `localStorage`, including which cards are collapsed. OSC bursts are paced on a 1/fs sample clock so a packet of samples is not stacked on one timestamp, and a real pause becomes a gap in the line instead of a straight stroke across it.
-
-Markers come from the buttons, hotkeys, `POST /api/markers`, and OSC `/Marker/N`. Blink and jaw clench are separate event types, debounced to 300 ms.
-
-Profiles (bands, ratios, markers, feedback rules) are YAML. Three ship with the app: `classic`, `hypnagogic` (5.5–6 Hz peak and theta/delta), and `alpha_relaxation`. Saving from the UI writes `data/profiles/<name>.yaml`, which overrides a builtin of the same name. Delete the file to restore the builtin.
-
-Biofeedback plays in the browser with Web Audio. Host audio via `aplay` is off unless you enable **Host speaker** in Setup. If `aplay` is missing, that toggle turns itself back off.
-
-## Sessions
+On disk:
 
 ```
 data/dataset_description.json
@@ -103,58 +123,103 @@ data/sub-<subject>/ses-<YYYYMMDDTHHMMSS>/
   eeg/sub-..._task-<task>_channels.tsv
   eeg/sub-..._events.tsv
   motion/  acc.csv gyro.csv
-  physio/  ppg.csv optics.csv
+  physio/  ppg.csv optics.csv battery.csv hr.csv
 ```
 
-`session.json` records the device settings, the profile, notes, and `eeg_scale`. XDF is not written in v0.1 (see the TODO in `liminalgate/recording.py`).
+`session.json` records the device, the profile, notes, and `eeg_scale`. XDF is not written.
 
-Powerline frequency is metadata in the session and the frequency of the display notch. Recorded EEG is not filtered.
+## Portainer
 
-## Microvolt scale
+Build from the repository. The build context can be the git URL:
 
-Muse Athena µV values can differ between BrainFlow and muse-lsl by about 4.5×. LiminalGate does not hard-code a correction. Set **EEG scale** in Setup (or `LIMINALGATE_EEG_SCALE`). The factor is applied once, at the input, and stored in the session metadata. The default is `1.0`.
+```
+https://github.com/ivlovric/LiminalGate.git#main
+```
 
-## Configuration
+The image is built locally (`liminalgate:0.4.0` in `compose.yaml`). **Re-pull image** does not rebuild that image. Bump the image tag and deploy again when you want a new build.
 
-Environment prefix `LIMINALGATE_`. `LIMINALGATE_INPUT` is accepted as an alias of `LIMINALGATE_INPUT_TYPE`.
+If 8080 or 5000 is already taken on the host, publish different host ports:
 
-| Variable | Default | Role |
-| --- | --- | --- |
-| `LIMINALGATE_INPUT` | `synthetic` | `synthetic`, `osc`, `playback`, `brainflow`, `lsl` |
-| `LIMINALGATE_TOKEN` | empty | When set, REST and the WebSocket require `Authorization: Bearer`, `X-Liminal-Token`, or `?token=` |
-| `LIMINALGATE_EEG_SCALE` | `1.0` | Multiplier for raw EEG |
-| `LIMINALGATE_EEG_FS` | `256` | Nominal EEG rate until a stream reports its own |
-| `LIMINALGATE_OSC_PORT` | `5000` | UDP listen port |
-| `LIMINALGATE_DATA_DIR` | `data` | Sessions, profiles, saved UI config |
-| `LIMINALGATE_POWERLINE_HZ` | `50` | Display notch, also stored on the session |
+```yaml
+ports:
+  - 8088:8080
+  - 5001:5000/udp
+```
 
-**Setup** asks for the input first (OSC, BrainFlow, LSL, playback, or synthetic) and then only the fields that input uses. OSC shows the UDP port, a Mind Monitor hint, and a live packet count. Signal scale, powerline, chart windows, and the session profile sit in their own sections. Advanced options stay folded. Apply reports success or the validation error in the panel. The panel writes `data/config.json`. On the next start that file overrides the environment for the fields the UI can change (not the token, host, or port). `/api/health` and the static dashboard stay open when a token is set. API docs: `/docs`.
+Point Mind Monitor at the host UDP port you published (5001 in that example). The app inside the container still listens on 8080 and 5000 unless you are on the host network.
 
-Put the token in the browser once via Setup. It is kept in `localStorage` on that browser.
-
-## BrainFlow and LSL
-
-Both libraries are installed in the image and imported only when that input is selected. BLE and LSL multicast do not cross the default Docker bridge. Use host networking:
+## Host network (BLE and LSL)
 
 ```bash
 docker compose -f compose.yaml -f compose.host.yaml up --build
 ```
 
-That mounts `/var/run/dbus` and puts the process on the host network. The app then listens on port 8080 and UDP 5000 directly. Setup's BrainFlow section lists the BrainFlow boards and can scan for nearby headsets (name, MAC, RSSI) via bleak or simpleble. Picking a `MuseS-` device fills the MAC, the serial (the advertised name), and `MUSE_S_ATHENA_BOARD` (67). Muse S and Athena share that advertisement, so switch the board to `muse_s` for an older Muse S. If the container cannot see Bluetooth, the scan says to run with `compose.host.yaml`. A missing Athena id asks you to upgrade BrainFlow.
+`compose.host.yaml` sets `network_mode: host`, mounts `/var/run/dbus`, and sets `apparmor:unconfined`. Published `ports:` are ignored in this mode. The app binds `LIMINALGATE_PORT` and `LIMINALGATE_OSC_PORT` on the host. Set both when 8080 or 5000 is already in use:
 
-The LSL input reads one EEG inlet. Marker inlet, clock correction, and irregular rate 0 are still TODO.
+```bash
+LIMINALGATE_PORT=8088 LIMINALGATE_OSC_PORT=5001 \
+  docker compose -f compose.yaml -f compose.host.yaml up --build
+```
+
+The healthcheck calls `127.0.0.1:$LIMINALGATE_PORT`. A saved `data/config.json` still overrides the UI fields (input, OSC port, scale, and the rest of Setup) on the next start. It does not override `LIMINALGATE_PORT` or the token.
+
+## Muse S Athena scale
+
+Athena's 14-bit full scale is about 1450 µV (`16383 × 0.0885`). The unsigned ADC midpoint sits near 800 µV; that offset on a raw trace is not a scale error. BrainFlow and muse-lsl have been reported to disagree by about 4.5×. LiminalGate does not hard-code a correction. **EEG scale** (`LIMINALGATE_EEG_SCALE`, default `1`) is applied once at the input and stored in the session. Mind Monitor OSC is already in µV, so leave the scale at 1 for that input.
+
+## Signal, heart rate, markers
+
+Samples go through a ring buffer. A sliding Welch PSD (4 s, 50% overlap, good channels, 1–45 Hz) produces absolute power in µV² and relative power. Band edges are inclusive. Ratio expressions such as `theta/delta` use a small parser (no `eval`).
+
+The display stream is decimated (at most 32 Hz) and sent about ten times a second. Charts cap their frame rate. Recording keeps every raw sample, including AUX. The plot and the spectrum drop AUX so a railed auxiliary channel cannot flatten the EEG lanes.
+
+A channel is left out of the mean when horseshoe or `is_good` says it is bad, when it is flat, or when samples sit on the ADC rail (near 0 µV only if the channel's median is above 200 µV, or at the top of the range, about 1400 µV and above). The ~800 µV baseline is the unsigned midpoint.
+
+OSC bursts are paced on a 1/fs clock. A packet of samples is not stacked on one timestamp, and a timestamp is never emitted earlier than the previous sample. A real pause becomes a gap in the line.
+
+The band chart is log10 µV² for delta, theta, alpha, beta, and gamma, smoothed with about a one-second time constant. Windows are 1, 5, 15, or 30 minutes. Device `/muse/elements/*_absolute` values are dashed lines when they arrive.
+
+Heart rate uses `/muse/ppg` (ambient, IR, red, and any extra Athena channels), band-passed around 0.7–3.5 Hz. The strongest channel is peak-detected. Optics is used when PPG is absent. A headset path such as `/muse/elements/heart_rate` wins when it arrives. The header reads `no PPG data`, then `computing`, then the rate. `/muse/batt` index 3 is temperature in °C; the Heart card shows it only after that value arrives. There is no separate skin-temperature path.
+
+Blink and jaw-clench marks stay off unless you turn them on. Marker keys are vibracije, puls tijela, izlazak, budjenje, and ostalo (keys 1–5). Markers also come from `POST /api/markers` and OSC `/Marker/N`.
+
+Profiles are YAML: `classic`, `hypnagogic`, and `alpha_relaxation`. Saving from the UI writes `data/profiles/<name>.yaml`. Delete the file to restore the builtin. Host audio via `aplay` is off unless **Host speaker** is enabled.
+
+## Configuration
+
+Environment prefix `LIMINALGATE_`. `LIMINALGATE_INPUT` is an alias of `LIMINALGATE_INPUT_TYPE`.
+
+| Variable | Default | Role |
+| --- | --- | --- |
+| `LIMINALGATE_INPUT` | `synthetic` | `synthetic`, `osc`, `playback`, `brainflow`, `lsl` |
+| `LIMINALGATE_PORT` | `8080` | Web port. The healthcheck uses this value |
+| `LIMINALGATE_TOKEN` | empty | When set, REST and the WebSocket require a bearer token |
+| `LIMINALGATE_EEG_SCALE` | `1.0` | Multiplier for raw EEG |
+| `LIMINALGATE_EEG_FS` | `256` | Nominal EEG rate until a stream reports its own |
+| `LIMINALGATE_OSC_PORT` | `5000` | UDP listen port |
+| `LIMINALGATE_OSC_HOST` | `0.0.0.0` | UDP bind address |
+| `LIMINALGATE_PLAYBACK_PATH` | empty | CSV to play |
+| `LIMINALGATE_PLAYBACK_SPEED` | `1` | `0` is as fast as possible |
+| `LIMINALGATE_PLAYBACK_LOOP` | `true` | Restart at the end of the file |
+| `LIMINALGATE_BRAINFLOW_BOARD` | `synthetic` | Board name or id |
+| `LIMINALGATE_BRAINFLOW_MAC` | empty | Headset MAC |
+| `LIMINALGATE_BRAINFLOW_SERIAL` | empty | Serial or advertised name |
+| `LIMINALGATE_LSL_NAME` | empty | Empty selects the first EEG stream |
+| `LIMINALGATE_DATA_DIR` | `data` | Sessions, profiles, saved UI config |
+| `LIMINALGATE_POWERLINE_HZ` | `50` | Display notch, also stored on the session |
+| `LIMINALGATE_DISPLAY_HZ` | `64` | Display decimation target, capped at 32 Hz |
+
+API docs: `/docs`.
 
 ## Develop without Docker
 
 ```bash
 python -m pip install -r requirements.txt -r requirements-dev.txt
-cd frontend && npm ci && npm run build && cd ..
+cd frontend && npm ci && npm test && npm run build && cd ..
 python -m liminalgate
 ```
 
-`websockets` is a direct dependency. The live dashboard socket needs it; a plain `uvicorn` install does not pull it in.
-
-For UI work, run the API on 8080 and `npm run dev` in `frontend` (Vite proxies `/api` and `/ws`).
+`websockets` is a direct dependency. For UI work, run the API on 8080 and `npm run dev` in `frontend` (Vite proxies `/api` and `/ws`).
 
 ```bash
 ruff check liminalgate tests
@@ -169,8 +234,7 @@ NumPy is pinned to 1.26.4 and SciPy to 1.14.1 so the wheels stay on baseline man
 - XDF writer
 - LSL marker inlet and clock sync
 - BrainFlow preset toggles in the UI
-- More than one input at a time (for example EEG over OSC and a separate PPG stream)
-- A real notch / bandpass, still off unless a profile asks for it
+- More than one input at a time
 
 ## License
 

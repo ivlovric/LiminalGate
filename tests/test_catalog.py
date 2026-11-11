@@ -22,9 +22,11 @@ def test_playback_files_are_csv_only(tmp_path: Path):
     nested.mkdir()
     (nested / "again.csv").write_text("timestamp\n", encoding="utf-8")
     found = playback_files(tmp_path)
-    assert str(tmp_path / "session.csv") in found
-    assert str(nested / "again.csv") in found
-    assert all(item.endswith(".csv") for item in found)
+    paths = [str(item["path"]) for item in found]
+    assert str(tmp_path / "session.csv") in paths
+    assert str(nested / "again.csv") in paths
+    assert all(str(item["path"]).endswith(".csv") for item in found)
+    assert all(item["eeg"] is False for item in found)
 
 
 def test_lsl_discovery_reports_availability():
@@ -94,7 +96,7 @@ def test_setup_catalog_routes(tmp_path: Path, monkeypatch):
     with TestClient(app) as client:
         files = client.get("/api/playback/files")
         assert files.status_code == 200
-        assert any(item.endswith("clip.csv") for item in files.json()["files"])
+        assert any(str(item["path"]).endswith("clip.csv") and item["eeg"] is False for item in files.json()["files"])
         streams = client.get("/api/lsl/streams")
         assert streams.status_code == 200
         body = streams.json()

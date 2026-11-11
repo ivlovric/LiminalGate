@@ -1,6 +1,8 @@
 """Session files and the HTTP API, driven by the synthetic input."""
 
+import io
 import time
+import zipfile
 from pathlib import Path
 
 import pyedflib
@@ -139,3 +141,70 @@ def test_websocket_marker(tmp_path: Path):
                     break
             assert found is not None
             assert found["kind"] == "marker"
+
+
+def test_recordings_can_be_listed_downloaded_and_deleted(tmp_path: Path):
+    app = create_app(Settings(data_dir=tmp_path, input_type="synthetic", token="secret"))
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        assert client.get("/api/sessions").status_code == 401
+        started = client.post("/api/sessions", json={"subject": "01", "task": "walk", "notes": ""}, headers=headers)
+        assert started.status_code == 200
+        time.sleep(0.25)
+        blocked = client.delete(
+            f"/api/sessions/01/{started.json()['session_id']}",
+            headers=headers,
+        )
+        assert blocked.status_code == 409
+        stopped = client.post("/api/sessions/stop", headers=headers)
+        assert stopped.status_code == 200
+        listed = client.get("/api/sessions", headers=headers).json()
+        row = listed[0]
+        assert row["subject_id"] == "01"
+        assert row["local_start"]
+        assert row["duration_sec"] is not None
+        assert "eeg" in row["streams"]
+        assert any(item["name"].endswith("_eeg.csv") for item in row["inventory"])
+        archive = client.get(f"/api/sessions/01/{row['session_id']}/archive", headers=headers)
+        assert archive.status_code == 200
+        assert archive.headers["content-type"].startswith("application/zip")
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+            names = bundle.namelist()
+        assert any(name.endswith("_eeg.csv") for name in names)
+        assert any(name.endswith("_events.tsv") or name.endswith("session.json") for name in names)
+        csv_name = next(item["name"] for item in row["inventory"] if item["name"].endswith("_eeg.csv"))
+        one = client.get(f"/api/sessions/01/{row['session_id']}/files/{csv_name}", headers=headers)
+        assert one.status_code == 200
+        assert one.content.startswith(b"timestamp")
+        outside = client.get(f"/api/sessions/01/{row['session_id']}/files/../../secret", headers=headers)
+        assert outside.status_code == 404
+        deleted = client.delete(f"/api/sessions/01/{row['session_id']}", headers=headers)
+        assert deleted.status_code == 200
+        assert client.get(f"/api/sessions/01/{row['session_id']}/archive", headers=headers).status_code == 404
+
+        uploaded = client.post(
+            "/api/playback/upload?name=clip.csv",
+            content=b"timestamp,TP9,AF7,AF8,TP10\n0,1,2,3,4\n0.004,5,6,7,8\n",
+            headers={**headers, "Content-Type": "text/csv"},
+        )
+        assert uploaded.status_code == 200
+        body = uploaded.json()
+        assert body["eeg"] is True
+        assert Path(body["path"]).is_file()
+        assert "Short file" in body["warning"]
+        switched = client.put(
+            "/api/config",
+            json={
+                "input_type": "playback",
+                "playback_path": body["path"],
+                "playback_speed": 0,
+                "playback_loop": False,
+            },
+            headers=headers,
+        )
+        assert switched.status_code == 200
+        status = client.get("/api/status", headers=headers).json()
+        assert status["playback"]["file"] == "clip.csv"
+        paused = client.post("/api/playback/control", json={"action": "pause"}, headers=headers)
+        assert paused.status_code == 200
+        assert paused.json()["paused"] is True

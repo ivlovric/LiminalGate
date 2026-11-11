@@ -4,7 +4,7 @@ import { DEFAULT_VIEW, ema, glide, loadView, shouldDraw, smoothSeries, visibleCa
 
 const fresh = loadView(null);
 assert.deepEqual(fresh.collapsed, ["eeg", "spectrum", "heart"]);
-assert.deepEqual(fresh.hidden, ["ratios", "session"]);
+assert.deepEqual(fresh.hidden, ["ratios", "session", "recordings"]);
 assert.equal(fresh.minutes, 5);
 assert.equal(fresh.traceWindow, 10);
 assert.equal(fresh.traceMode, "filtered");

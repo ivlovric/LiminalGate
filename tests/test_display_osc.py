@@ -2,6 +2,7 @@
 
 import numpy as np
 from liminalgate.display_filter import DisplayFilter, gap_before
+from liminalgate.hub import _without_aux
 from liminalgate.inputs.osc_mindmonitor import SampleClock, parse_message
 from liminalgate.pipeline import Pipeline
 from liminalgate.profiles import builtin_profiles
@@ -44,6 +45,20 @@ def test_bursty_osc_preserves_order_and_sample_spacing():
     assert again == []
 
 
+def test_sample_clock_never_steps_backwards_after_a_long_burst():
+    clock = SampleClock(256.0)
+    now = 1_000.0
+    parsed = []
+    for index in range(20):
+        parsed.extend(parse_message("/muse/eeg", (float(index), 0.0, 0.0, 0.0), fs=256.0, now=now, clock=clock))
+    # Twenty samples are ~78 ms of timeline, but the wall clock has not moved.
+    # The next datagram 60 ms later used to snap back under the last sample.
+    later = parse_message("/muse/eeg", (20.0, 0.0, 0.0, 0.0), fs=256.0, now=now + 0.06, clock=clock)
+    assert later[0].t >= parsed[-1].t + 0.5 / 256.0
+    stamps = [item.t for item in parsed] + [later[0].t]
+    assert all(right > left for left, right in zip(stamps, stamps[1:], strict=False))
+
+
 def test_established_width_keeps_aux_from_rotating_into_eeg():
     clock = SampleClock(256.0)
     first = parse_message("/muse/eeg", (1, 2, 3, 4, 5), fs=256.0, now=5.0, clock=clock)
@@ -55,6 +70,15 @@ def test_established_width_keeps_aux_from_rotating_into_eeg():
     assert batch[1].values == (5.0, 6.0, 7.0, 8.0, 9.0)
     assert batch[1].channels[-1] == "AUX1"
     assert batch[-1].t > batch[0].t
+
+
+def test_aux_channels_leave_the_display_lanes():
+    channels, values = _without_aux(
+        ("TP9", "AF7", "AF8", "TP10", "AUX1", "AUX4"),
+        (1.0, 2.0, 3.0, 4.0, 800.0, 1450.0),
+    )
+    assert channels == ("TP9", "AF7", "AF8", "TP10")
+    assert values == (1.0, 2.0, 3.0, 4.0)
 
 
 def test_is_good_maps_onto_horseshoe_bad():
