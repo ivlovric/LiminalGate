@@ -198,9 +198,9 @@ body.calm .panel[data-card="timeline"] .panel-body { flex: 1 1 auto; min-height:
   transform: rotate(45deg) translateY(-2px);
 }
 .panel.collapsed .caret { transform: rotate(-45deg); }
-.seg { display: flex; gap: 0.25rem; }
-.seg button { min-height: 32px; padding: 0.1rem 0.5rem; font-size: 0.8rem; }
-.seg button.on, #calm-btn.on { background: #1e3a5f; border-color: var(--accent); }
+.seg, .chart-tools { display: flex; gap: 0.25rem; align-items: center; flex-wrap: wrap; }
+.seg button, #device-lines { min-height: 32px; padding: 0.1rem 0.5rem; font-size: 0.8rem; }
+.seg button.on, #calm-btn.on, #tone-btn.on, #device-lines.on { background: #1e3a5f; border-color: var(--accent); }
 .menu { position: relative; }
 .menu-pop {
   position: absolute;
@@ -249,6 +249,33 @@ body.calm .u-legend { font-size: 1rem !important; }
 .panel[data-card="spectrum"] .plot { height: 240px; min-height: 240px; max-height: 240px; flex: 0 0 240px; }
 .u-wrap { font-family: inherit; }
 .u-legend { color: var(--text) !important; font-size: 0.75rem !important; }
+.legend-note { margin: 0.1rem 0 0.15rem; color: var(--muted); font-size: 0.82rem; }
+.band-legend { display: flex; flex-wrap: wrap; gap: 0.15rem 0.25rem; padding: 0 0 0.4rem; }
+.band-legend button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  min-height: 1.8rem;
+  padding: 0.1rem 0.5rem;
+  color: var(--swatch, var(--text));
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+.band-legend button:hover { border-color: var(--line); background: transparent; }
+.band-legend button[aria-pressed="false"] { opacity: 0.38; }
+.band-legend .swatch {
+  width: 1.45rem;
+  height: 0;
+  border: 0;
+  border-top: 3px solid var(--swatch, var(--text));
+  border-radius: 0;
+}
+.band-legend .swatch.dashed { border-top-style: dashed; width: 1.6rem; }
+body.calm .legend-note { font-size: 0.85rem; }
+body.calm .band-legend button { font-size: 1rem; }
 
 .bars { display: flex; flex-direction: column; gap: 0.45rem; overflow: visible; }
 .band { display: grid; grid-template-columns: 8.5rem 1fr 4.2rem; gap: 0.55rem; align-items: center; }

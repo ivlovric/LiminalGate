@@ -2,6 +2,7 @@ import "uplot/dist/uPlot.min.css";
 
 import { TonePlayer } from "./audio";
 import { CARDS, ema, loadView, smoothSeries, type CardId, type ViewState } from "./pace";
+import { TIMELINE_BANDS, legendItems, type LegendBand } from "./legend";
 import { formatSessionWhen } from "./time";
 import { BOARDS, INPUTS, validateSetup } from "./setup";
 import { RollingPlot, type TimedPoint } from "./plots";
@@ -165,15 +166,25 @@ const drawerTitle = $("drawer-title");
 const drawerBody = $("drawer-body");
 const toast = $("toast");
 
-const TIMELINE = ["delta", "theta", "alpha", "beta", "gamma"] as const;
-const TIMELINE_COLORS = ["#8b7cf6", "#7aa2ff", "#5dcaa5", "#e0b15a", "#e07a8a"];
+const TIMELINE = TIMELINE_BANDS.map((band) => band.name);
+let bandMeta: LegendBand[] = TIMELINE_BANDS.map((band) => ({ ...band }));
 const LANE = { filtered: 140, raw: 2000 };
 
 const VIEW_KEY = "liminalgate.view";
 const tone = new TonePlayer();
 const eegPlot = new RollingPlot($("eeg-plot"), 10, undefined, { maxFps: 12, glide: true, retainSec: 35 });
-const specPlot = new RollingPlot($("spec-plot"), 60, undefined, { maxFps: 2, glide: false });
-const timelinePlot = new RollingPlot($("timeline-plot"), 300, TIMELINE_COLORS, { maxFps: 2, glide: true, retainSec: 30 * 60 });
+const specPlot = new RollingPlot($("spec-plot"), 60, undefined, {
+  maxFps: 2,
+  glide: false,
+  xLabel: "Hz",
+  yLabel: "log10 power",
+});
+const timelinePlot = new RollingPlot($("timeline-plot"), 300, bandMeta.map((band) => band.color), {
+  maxFps: 2,
+  glide: true,
+  retainSec: 30 * 60,
+  legend: false,
+});
 const hrPlot = new RollingPlot($("hr-plot"), 300, ["#e07a8a"], { maxFps: 2, glide: true, retainSec: 30 * 60 });
 
 let token = localStorage.getItem("liminalgate.token") ?? "";
@@ -395,13 +406,38 @@ function syncTraces(full: boolean): void {
   eegPlot.pushTimed(eegChannels, fresh);
 }
 
-function timelineNames(): { names: string[]; dashes: boolean[] } {
-  const names: string[] = [...TIMELINE];
-  const dashes = names.map(() => false);
-  const deviceNames = TIMELINE.filter((name) => timelineDevice[name] != null).map((name) => `${name} device`);
-  names.push(...deviceNames);
-  dashes.push(...deviceNames.map(() => true));
-  return { names, dashes };
+function timelineSeries(): {
+  names: string[];
+  dashes: boolean[];
+  colors: string[];
+  legend: ReturnType<typeof legendItems>;
+} {
+  const headset = view.showDevice ? TIMELINE.filter((name) => timelineDevice[name] != null) : [];
+  const legend = legendItems(bandMeta, headset);
+  const ordered = [...legend.filter((item) => !item.dashed), ...legend.filter((item) => item.dashed)];
+  return {
+    names: ordered.map((item) => item.series),
+    dashes: ordered.map((item) => item.dashed),
+    colors: ordered.map((item) => item.color),
+    legend,
+  };
+}
+
+let legendKey = "";
+
+function renderTimelineLegend(items: ReturnType<typeof legendItems>): void {
+  const host = document.getElementById("timeline-legend");
+  if (!host) return;
+  const key = items.map((item) => `${item.series}:${item.label}:${item.color}:${item.dashed}`).join("|");
+  if (key === legendKey) return;
+  legendKey = key;
+  host.innerHTML = items
+    .map((item) => {
+      const pressed = timelinePlot.shown(item.series);
+      const kind = item.dashed ? "dashed" : "solid";
+      return `<button type="button" data-series="${esc(item.series)}" aria-pressed="${pressed ? "true" : "false"}" style="--swatch:${esc(item.color)}"><i class="swatch ${kind}" aria-hidden="true"></i><span>${esc(item.label)}</span></button>`;
+    })
+    .join("");
 }
 
 function timelineValues(row: (typeof timelineHistory)[number], names: string[]): (number | null)[] {
@@ -412,8 +448,9 @@ function timelineValues(row: (typeof timelineHistory)[number], names: string[]):
 }
 
 function syncTimeline(full: boolean): void {
+  const { names, dashes, colors, legend } = timelineSeries();
+  renderTimelineLegend(legend);
   if (!timelineHistory.length) return;
-  const { names, dashes } = timelineNames();
   const key = names.join("|");
   if (full || key !== timelineKey) {
     timelineKey = key;
@@ -422,11 +459,12 @@ function syncTimeline(full: boolean): void {
       names,
       timelineHistory.filter((row) => row.t >= min).map((row) => ({ t: row.t, values: timelineValues(row, names) })),
       dashes,
+      colors,
     );
     return;
   }
   const row = timelineHistory[timelineHistory.length - 1];
-  timelinePlot.pushTimed(names, [{ t: row.t, values: timelineValues(row, names) }], dashes);
+  timelinePlot.pushTimed(names, [{ t: row.t, values: timelineValues(row, names) }], dashes, colors);
 }
 
 function cardShown(id: CardId): boolean {
@@ -468,6 +506,11 @@ function applyView(): void {
   hrPlot.setWindow(timelineMinutes * 60);
   for (const button of document.querySelectorAll<HTMLButtonElement>("#minute-toggle button")) {
     button.classList.toggle("on", Number(button.dataset.minutes) === timelineMinutes);
+  }
+  const deviceBtn = document.getElementById("device-lines");
+  if (deviceBtn) {
+    deviceBtn.classList.toggle("on", view.showDevice);
+    deviceBtn.setAttribute("aria-pressed", view.showDevice ? "true" : "false");
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>("#trace-window button")) {
     button.classList.toggle("on", Number(button.dataset.window) === traceWindow);
@@ -742,7 +785,7 @@ function onMessage(raw: string): void {
       specPlot.setSeries(spectrum.freqs, specSmooth);
     }
     const timeline = message.timeline as
-      | Record<string, { log10: number | null; device: number | null }>
+      | Record<string, { log10: number | null; device: number | null; f_low?: number; f_high?: number; color?: string }>
       | undefined;
     if (timeline && stamp) {
       const dt = emaStamp ? Math.min(2, stamp - emaStamp) : 0;
@@ -751,6 +794,12 @@ function onMessage(raw: string): void {
       const device: Record<string, number | null> = {};
       for (const name of TIMELINE) {
         const sample = timeline[name];
+        const meta = bandMeta.find((band) => band.name === name);
+        if (meta && sample) {
+          if (typeof sample.f_low === "number") meta.low = sample.f_low;
+          if (typeof sample.f_high === "number") meta.high = sample.f_high;
+          if (typeof sample.color === "string" && sample.color) meta.color = sample.color;
+        }
         const value = sample?.log10;
         if (typeof value === "number" && Number.isFinite(value)) {
           timelineEma[name] = ema(timelineEma[name], value, dt, view.smoothSec);
@@ -1538,14 +1587,28 @@ drawerBody.addEventListener("click", (event) => {
   renderProfileForm();
 });
 
+function paintToneButton(on = tone.running): void {
+  toneBtn.textContent = on ? "Tone on" : "Tone";
+  toneBtn.classList.toggle("on", on);
+  toneBtn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+let toneWanted = false;
 toneBtn.addEventListener("click", () => {
-  void tone
-    .start()
+  toneWanted = !toneWanted;
+  paintToneButton(toneWanted);
+  const action = toneWanted ? tone.start() : tone.stop();
+  void action
     .then(() => {
-      toneBtn.textContent = "Tone on";
+      toneWanted = tone.running;
+      paintToneButton();
       setFeedback(lastVolume, lastHz);
     })
-    .catch((error: Error) => showToast(error.message));
+    .catch((error: Error) => {
+      toneWanted = false;
+      paintToneButton();
+      showToast(error.message);
+    });
 });
 
 recordBtn.addEventListener("click", () => {
@@ -1594,6 +1657,24 @@ document.getElementById("minute-toggle")?.addEventListener("click", (event) => {
   timelineMinutes = Number(target.dataset.minutes);
   applyView();
 });
+
+document.getElementById("device-lines")?.addEventListener("click", () => {
+  view.showDevice = !view.showDevice;
+  applyView();
+  syncTimeline(true);
+});
+
+document.getElementById("timeline-legend")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest("button[data-series]");
+  if (!(button instanceof HTMLButtonElement)) return;
+  const name = button.dataset.series ?? "";
+  const shown = timelinePlot.toggle(name);
+  button.setAttribute("aria-pressed", shown ? "true" : "false");
+});
+
+renderTimelineLegend(legendItems(bandMeta, []));
 
 document.querySelector("main")?.addEventListener("click", (event) => {
   const target = event.target;

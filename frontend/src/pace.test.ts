@@ -9,6 +9,7 @@ assert.equal(fresh.minutes, 5);
 assert.equal(fresh.traceWindow, 10);
 assert.equal(fresh.traceMode, "filtered");
 assert.equal(fresh.smoothSec, 1);
+assert.equal(fresh.showDevice, false);
 assert.equal(fresh.calm, false);
 assert.ok(visibleCards(fresh).includes("timeline"));
 assert.ok(visibleCards(fresh).includes("bands"));
@@ -29,6 +30,9 @@ assert.equal(restored.calm, true);
 assert.deepEqual(loadView("{").minutes, DEFAULT_VIEW.minutes);
 assert.equal(loadView(JSON.stringify({ minutes: 2, traceWindow: 2, smoothSec: 9 })).minutes, 5);
 assert.equal(loadView(JSON.stringify({ smoothSec: 2 })).smoothSec, 2);
+assert.equal(loadView(JSON.stringify({ showDevice: true })).showDevice, true);
+assert.equal(loadView(JSON.stringify({ showDevice: "yes" })).showDevice, false);
+assert.equal(restored.showDevice, false);
 
 const step = ema(0, 10, 1, 1);
 assert.ok(step > 6 && step < 7, `ema step ${step}`);

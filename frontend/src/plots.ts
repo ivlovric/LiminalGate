@@ -14,6 +14,11 @@ export interface PlotOptions {
   glide?: boolean;
   /** How much history to keep. The visible window can be shorter. */
   retainSec?: number;
+  /** Axis titles drawn inside the canvas. */
+  xLabel?: string;
+  yLabel?: string;
+  /** Built-in uPlot legend. Off when the card draws its own. */
+  legend?: boolean;
 }
 
 function sizeOf(el: HTMLElement): { width: number; height: number } {
@@ -44,6 +49,10 @@ export class RollingPlot {
   private labels: string[] = [];
   private lastW = 0;
   private lastH = 0;
+  private xLabel: string;
+  private yLabel: string;
+  private showLegend: boolean;
+  private hidden = new Set<string>();
 
   constructor(
     private el: HTMLElement,
@@ -54,8 +63,24 @@ export class RollingPlot {
     this.maxFps = options.maxFps ?? 12;
     this.glideEnabled = options.glide ?? true;
     this.retainSec = options.retainSec ?? windowSec + 2;
+    this.xLabel = options.xLabel ?? "";
+    this.yLabel = options.yLabel ?? "";
+    this.showLegend = options.legend !== false;
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(el);
+  }
+
+  shown(label: string): boolean {
+    return !this.hidden.has(label);
+  }
+
+  /** Hide or show one series. Returns whether it is visible afterwards. */
+  toggle(label: string): boolean {
+    if (this.hidden.has(label)) this.hidden.delete(label);
+    else this.hidden.add(label);
+    const index = this.labels.indexOf(label);
+    if (this.plot && index >= 0) this.plot.setSeries(index + 1, { show: !this.hidden.has(label) });
+    return !this.hidden.has(label);
   }
 
   setWindow(seconds: number): void {
@@ -85,9 +110,10 @@ export class RollingPlot {
     this.kick();
   }
 
-  replace(channels: string[], points: TimedPoint[], dashes: boolean[] = []): void {
+  replace(channels: string[], points: TimedPoint[], dashes: boolean[] = [], colors?: string[]): void {
     this.key = channels.join("|");
     this.dashes = dashes;
+    if (colors?.length) this.colors = colors;
     this.xs = [];
     this.ys = channels.map(() => []);
     this.anchored = false;
@@ -96,14 +122,15 @@ export class RollingPlot {
     this.kick();
   }
 
-  pushTimed(channels: string[], points: TimedPoint[], dashes: boolean[] = []): void {
+  pushTimed(channels: string[], points: TimedPoint[], dashes: boolean[] = [], colors?: string[]): void {
     if (!channels.length || !points.length) return;
     const signature = channels.join("|");
     if (signature !== this.key) {
-      this.replace(channels, points, dashes);
+      this.replace(channels, points, dashes, colors);
       return;
     }
     if (dashes.length) this.dashes = dashes;
+    if (colors?.length) this.colors = colors;
     for (const point of points) this.add(channels, point);
     this.kick();
   }
@@ -197,9 +224,11 @@ export class RollingPlot {
     this.plot?.destroy();
     const { width, height } = sizeOf(this.el);
     const series: uPlot.Series[] = [{}];
+    const font = '15px "Segoe UI", "Helvetica Neue", sans-serif';
     channels.forEach((label, index) => {
       series.push({
         label,
+        show: !this.hidden.has(label),
         stroke: this.colors[index % this.colors.length],
         width: this.dashes[index] ? 1.4 : 2,
         dash: this.dashes[index] ? [6, 4] : undefined,
@@ -207,6 +236,31 @@ export class RollingPlot {
         points: { show: false },
       });
     });
+    const xAxis: uPlot.Axis = {
+      stroke: "#93a4ba",
+      grid: { stroke: "#243044" },
+      values: (_plot, splits) => splits.map((value) => clock(value)),
+    };
+    const yAxis: uPlot.Axis = {
+      stroke: "#93a4ba",
+      grid: { stroke: "#243044" },
+      size: 56,
+    };
+    if (this.xLabel) {
+      xAxis.label = this.xLabel;
+      xAxis.size = 48;
+      xAxis.labelSize = 18;
+      xAxis.font = font;
+      xAxis.labelFont = font;
+    }
+    if (this.yLabel) {
+      yAxis.label = this.yLabel;
+      yAxis.size = 78;
+      yAxis.labelSize = 22;
+      yAxis.labelGap = 6;
+      yAxis.font = font;
+      yAxis.labelFont = font;
+    }
     this.plot = new uPlot(
       {
         width: Math.max(120, width),
@@ -222,19 +276,8 @@ export class RollingPlot {
             },
           },
         },
-        axes: [
-          {
-            stroke: "#93a4ba",
-            grid: { stroke: "#243044" },
-            values: (_plot, splits) => splits.map((value) => clock(value)),
-          },
-          {
-            stroke: "#93a4ba",
-            grid: { stroke: "#243044" },
-            size: 56,
-          },
-        ],
-        legend: { show: true },
+        axes: [xAxis, yAxis],
+        legend: { show: this.showLegend },
         cursor: { show: true, drag: { x: false, y: false } },
       },
       [this.xs, ...this.ys] as uPlot.AlignedData,

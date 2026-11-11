@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- The band-power chart names each line: band and frequency range, in that line's colour. Solid lines are LiminalGate's own computation from the raw EEG. Dashed lines are the same band as reported by the device (Mind Monitor). A Device button next to the minute window shows those dashed lines; it starts off and is remembered in the browser. Click a legend entry to hide that line.
+- The spectrum chart labels its axes: Hz and log10 power.
+- Tone is a header button next to View. Click it to start the biofeedback tone, and click again to silence it.
+
 ## 0.4.1
 
 - Band power, markers, and the other full-width cards keep their content height instead of being squeezed to the viewport.
