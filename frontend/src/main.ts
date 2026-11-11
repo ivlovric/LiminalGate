@@ -1,7 +1,7 @@
 import "uplot/dist/uPlot.min.css";
 
 import { TonePlayer } from "./audio";
-import { RollingPlot } from "./plots";
+import { RollingPlot, type TimedPoint } from "./plots";
 import "./style.css";
 
 interface Band {
@@ -130,9 +130,14 @@ const drawerTitle = $("drawer-title");
 const drawerBody = $("drawer-body");
 const toast = $("toast");
 
+const TIMELINE = ["delta", "theta", "alpha", "beta", "gamma"] as const;
+const TIMELINE_COLORS = ["#8b7cf6", "#7aa2ff", "#5dcaa5", "#e0b15a", "#e07a8a"];
+const LANE = { filtered: 140, raw: 2000 };
+
 const tone = new TonePlayer();
-const eegPlot = new RollingPlot($("eeg-plot"), 6);
+const eegPlot = new RollingPlot($("eeg-plot"), 5);
 const specPlot = new RollingPlot($("spec-plot"), 60);
+const timelinePlot = new RollingPlot($("timeline-plot"), 120, TIMELINE_COLORS);
 
 let token = localStorage.getItem("liminalgate.token") ?? "";
 let profile: Profile | null = null;
@@ -146,6 +151,16 @@ let recordAnchor: { elapsed: number; at: number } | null = null;
 let lastVolume = 0;
 let lastHz = 220;
 let drawerMode: "profile" | "setup" | null = null;
+let traceMode: "filtered" | "raw" = "filtered";
+let traceWindow = 5;
+let timelineMinutes = 2;
+let excluded = new Set<string>();
+let lastQuality: number[] | null = null;
+let eegChannels: string[] = ["TP9", "AF7", "AF8", "TP10"];
+const traceHistory: { t: number; raw: number[]; filtered: number[]; gap: boolean }[] = [];
+const timelineHistory: { t: number; values: Record<string, number | null>; device: Record<string, number | null> }[] = [];
+const timelineEma: Record<string, number> = {};
+const timelineDevice: Record<string, number | null> = {};
 
 function esc(value: string): string {
   return value.replace(/[&<>"']/g, (ch) =>
@@ -221,16 +236,74 @@ function qualityClass(value: number): string {
 }
 
 function renderHorseshoe(channels: string[], quality: number[] | null): void {
-  if (!quality || !quality.length) {
+  const names = channels.filter((name) => !name.toUpperCase().startsWith("AUX"));
+  const count = Math.max(names.length, quality?.length ?? 0);
+  if (!count) {
     horseshoe.innerHTML = "";
     return;
   }
-  horseshoe.innerHTML = quality
-    .map((value, index) => {
-      const name = channels[index] ?? `${index + 1}`;
-      return `<span><i class="${qualityClass(value)}"></i>${esc(name)}</span>`;
-    })
-    .join("");
+  horseshoe.innerHTML = Array.from({ length: count }, (_, index) => {
+    const name = names[index] ?? channels[index] ?? `${index + 1}`;
+    const value = quality?.[index];
+    const bad = excluded.has(name) || (value != null && value >= 4);
+    const klass = bad ? "bad" : value == null ? "" : qualityClass(value);
+    const title = excluded.has(name) ? "excluded from averages" : "";
+    return `<span title="${esc(title)}"><i class="${klass}"></i>${esc(name)}</span>`;
+  }).join("");
+}
+
+function redrawTraces(): void {
+  const title = document.getElementById("eeg-title");
+  if (title) title.textContent = traceMode === "filtered" ? "EEG" : "EEG raw";
+  if (!traceHistory.length) {
+    eegPlot.reset();
+    return;
+  }
+  const last = traceHistory[traceHistory.length - 1].t;
+  const min = last - traceWindow;
+  const lane = LANE[traceMode];
+  const channels = eegChannels;
+  const points: TimedPoint[] = [];
+  let previous: number | null = null;
+  for (const point of traceHistory) {
+    if (point.t < min) continue;
+    if (point.gap && previous != null) {
+      points.push({ t: previous + (point.t - previous) * 0.5, values: channels.map(() => null) });
+    }
+    const source = traceMode === "raw" ? point.raw : point.filtered;
+    points.push({
+      t: point.t,
+      values: channels.map((_, index) => {
+        const value = source[index];
+        return typeof value === "number" ? value + index * lane : null;
+      }),
+    });
+    previous = point.t;
+  }
+  eegPlot.reset();
+  eegPlot.pushTimed(channels, points);
+}
+
+function redrawTimeline(): void {
+  const names: string[] = [...TIMELINE];
+  const dashes = names.map(() => false);
+  const deviceNames = TIMELINE.filter((name) => timelineDevice[name] != null).map((name) => `${name} device`);
+  names.push(...deviceNames);
+  dashes.push(...deviceNames.map(() => true));
+  const last = timelineHistory[timelineHistory.length - 1]?.t;
+  if (last == null) return;
+  const min = last - timelineMinutes * 60;
+  const points: TimedPoint[] = timelineHistory
+    .filter((row) => row.t >= min)
+    .map((row) => ({
+      t: row.t,
+      values: [
+        ...TIMELINE.map((name) => row.values[name] ?? null),
+        ...deviceNames.map((label) => row.device[label.replace(" device", "")] ?? null),
+      ],
+    }));
+  timelinePlot.reset();
+  timelinePlot.pushTimed(names, points, dashes);
 }
 
 function renderBands(bands: Record<string, BandPower>): void {
@@ -332,9 +405,27 @@ function onMessage(raw: string): void {
     return;
   }
   if (message.type === "display") {
-    const eeg = message.eeg as { channels: string[]; t0: number; fs: number; samples: number[][] };
-    if (eeg.samples.length) eegPlot.push(eeg.channels, eeg.t0, eeg.fs, eeg.samples);
-    renderHorseshoe(eeg.channels, (message.quality as number[] | null) ?? null);
+    const eeg = message.eeg as {
+      channels?: string[];
+      points?: { t: number; raw: number[]; filtered: number[]; gap?: boolean }[];
+    };
+    if (eeg.channels?.length) eegChannels = eeg.channels;
+    for (const point of eeg.points ?? []) {
+      traceHistory.push({
+        t: point.t,
+        raw: point.raw,
+        filtered: point.filtered,
+        gap: Boolean(point.gap),
+      });
+    }
+    const newest = traceHistory[traceHistory.length - 1]?.t;
+    if (newest != null) {
+      const min = newest - 10;
+      while (traceHistory.length && traceHistory[0].t < min) traceHistory.shift();
+    }
+    redrawTraces();
+    if (Array.isArray(message.quality)) lastQuality = message.quality as number[];
+    renderHorseshoe(eegChannels, lastQuality);
     if (typeof message.hr === "number") hrEl.textContent = message.hr.toFixed(0);
     applyRecording((message.recording as Recording | null) ?? null);
     return;
@@ -344,6 +435,35 @@ function onMessage(raw: string): void {
     renderRatios((message.ratios as Record<string, { expression: string; mean: number | null }>) ?? {});
     const spectrum = message.spectrum as { freqs: number[]; psd_log10: number[] };
     if (spectrum?.freqs?.length) specPlot.setSeries(spectrum.freqs, spectrum.psd_log10);
+    const timeline = message.timeline as
+      | Record<string, { log10: number | null; device: number | null }>
+      | undefined;
+    if (timeline && typeof message.t === "number") {
+      const smoothed: Record<string, number | null> = {};
+      const device: Record<string, number | null> = {};
+      for (const name of TIMELINE) {
+        const sample = timeline[name];
+        const value = sample?.log10;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          const previous = timelineEma[name];
+          timelineEma[name] = previous == null ? value : 0.25 * value + 0.75 * previous;
+          smoothed[name] = timelineEma[name];
+        } else {
+          smoothed[name] = timelineEma[name] ?? null;
+        }
+        device[name] = typeof sample?.device === "number" ? sample.device : null;
+        if (device[name] != null) timelineDevice[name] = device[name];
+      }
+      timelineHistory.push({ t: message.t as number, values: smoothed, device });
+      const min = (message.t as number) - 5 * 60;
+      while (timelineHistory.length && timelineHistory[0].t < min) timelineHistory.shift();
+      redrawTimeline();
+    }
+    const dropped = message.excluded as string[] | undefined;
+    if (dropped) {
+      excluded = new Set(dropped);
+      renderHorseshoe(eegChannels, lastQuality);
+    }
     const feedback = message.feedback as { volume: number; frequency: number };
     setFeedback(feedback.volume, feedback.frequency);
     if (typeof message.hr === "number") hrEl.textContent = message.hr.toFixed(0);
@@ -731,6 +851,32 @@ setupBtn.addEventListener("click", () => openDrawer("setup"));
 document.getElementById("drawer-close")?.addEventListener("click", closeDrawer);
 drawer.addEventListener("click", (event) => {
   if (event.target === drawer) closeDrawer();
+});
+
+document.getElementById("trace-mode")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement) || !target.dataset.mode) return;
+  traceMode = target.dataset.mode === "raw" ? "raw" : "filtered";
+  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
+  redrawTraces();
+});
+
+document.getElementById("trace-window")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement) || !target.dataset.window) return;
+  traceWindow = Number(target.dataset.window);
+  eegPlot.setWindow(traceWindow);
+  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
+  redrawTraces();
+});
+
+document.getElementById("minute-toggle")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement) || !target.dataset.minutes) return;
+  timelineMinutes = Number(target.dataset.minutes);
+  timelinePlot.setWindow(timelineMinutes * 60);
+  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
+  redrawTimeline();
 });
 
 markerButtons.addEventListener("click", (event) => {

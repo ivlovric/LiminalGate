@@ -45,18 +45,80 @@ def _floats(args: tuple) -> tuple[float, ...] | None:
         return None
 
 
-def split_eeg(values: tuple[float, ...]) -> list[tuple[float, ...]]:
-    """One Mind Monitor packet is a single sample. Longer packets are split by 4."""
+class SampleClock:
+    """Turn bursty OSC arrivals into an evenly spaced sample clock.
+
+    Mind Monitor often delivers a BLE packet's worth of ``/muse/eeg`` messages
+    in one UDP burst (classically 12 samples, 256/12 = 21.333 Hz). Stamping each
+    message with ``time.time()`` stacks those samples on one x position and
+    draws a line across the gap to the next burst. This clock keeps arrival
+    order and spaces samples by ``1/fs`` until the stream actually pauses.
+    """
+
+    def __init__(self, fs: float) -> None:
+        self.fs = float(fs)
+        self.step = 1.0 / self.fs if self.fs > 0 else 0.0
+        self.next_t: float | None = None
+        self.width: int | None = None
+        self._last: tuple[float, ...] | None = None
+        self._last_wall = 0.0
+        self._stamp_wall: float | None = None
+
+    def configure(self, fs: float) -> None:
+        if abs(fs - self.fs) < 0.01:
+            return
+        self.fs = float(fs)
+        self.step = 1.0 / self.fs if self.fs > 0 else 0.0
+        self.next_t = None
+
+    def duplicate(self, values: tuple[float, ...], now: float) -> bool:
+        """A second copy of the same datagram inside a fraction of a sample."""
+
+        if self._last == values and now - self._last_wall < 0.0004:
+            return True
+        self._last = values
+        self._last_wall = now
+        return False
+
+    def timestamps(self, count: int, now: float) -> list[float]:
+        if count <= 0:
+            return []
+        step = self.step
+        previous = self._stamp_wall
+        self._stamp_wall = now
+        # Messages inside 50 ms of each other are one burst or a paced sample.
+        # A longer hole is a real gap: start the clock at this arrival.
+        continued = previous is not None and self.next_t is not None and now - previous <= 0.05
+        start = self.next_t if continued else now - (count - 1) * step
+        times = [start + index * step for index in range(count)]
+        self.next_t = times[-1] + step
+        return times
+
+
+def split_eeg(values: tuple[float, ...], width: int | None = None) -> list[tuple[float, ...]]:
+    """Split one OSC payload into samples.
+
+    A message of 1–8 floats is one sample (4 EEG plus up to 4 AUX). A longer
+    message is several samples concatenated. When the live stream has already
+    shown its width (4, 5, 6, or 8), that width wins. Otherwise groups of 4
+    are the classic layout. Preferring 4 for an Athena batch that is also
+    divisible by 4 rotates AUX into AF7 and paints a sawtooth.
+    """
 
     count = len(values)
     if count == 0:
         return []
     if count <= 8:
         return [values]
-    if count % 4 == 0:
-        return [values[index : index + 4] for index in range(0, count, 4)]
-    if count % 5 == 0:
-        return [values[index : index + 5] for index in range(0, count, 5)]
+
+    def chunks(size: int) -> list[tuple[float, ...]]:
+        return [values[index : index + size] for index in range(0, count, size)]
+
+    if width in {4, 5, 6, 8} and count % width == 0:
+        return chunks(width)
+    for size in (4, 5, 6, 8):
+        if count % size == 0:
+            return chunks(size)
     return [values[:8]]
 
 
@@ -71,6 +133,7 @@ def parse_message(
     fs: float = 256.0,
     scale: float = 1.0,
     now: float | None = None,
+    clock: SampleClock | None = None,
 ) -> list[Sample | Event]:
     """Turn one OSC message into samples and events. Unknown addresses yield nothing."""
 
@@ -80,16 +143,24 @@ def parse_message(
     if values is None:
         return []
     if address == "/muse/eeg":
-        frames = split_eeg(values)
+        if clock is not None and clock.duplicate(values, stamp):
+            return []
+        frames = split_eeg(values, clock.width if clock is not None else None)
         if not frames:
             return []
-        step = 1.0 / fs if fs > 0 else 0.0
+        if clock is not None and len(values) <= 8:
+            clock.width = len(values)
+        if clock is not None:
+            times = clock.timestamps(len(frames), stamp)
+        else:
+            step = 1.0 / fs if fs > 0 else 0.0
+            last = len(frames) - 1
+            times = [stamp - (last - index) * step for index in range(len(frames))]
         parsed: list[Sample | Event] = []
-        last = len(frames) - 1
-        for index, frame in enumerate(frames):
+        for frame, frame_time in zip(frames, times, strict=True):
             names = channel_names(len(frame))
             scaled = tuple(float(value) * scale for value in frame[: len(names)])
-            parsed.append(Sample(stamp - (last - index) * step, "eeg", names, scaled, fs))
+            parsed.append(Sample(frame_time, "eeg", names, scaled, fs))
         return parsed
     if address == "/muse/acc" and len(values) >= 3:
         return [Sample(stamp, "acc", ("x", "y", "z"), values[:3], 52.0)]
@@ -108,6 +179,10 @@ def parse_message(
         return [Sample(stamp, "device_band", names, values[:4], 10.0)]
     if address == "/muse/elements/horseshoe" and len(values) >= 4:
         return [Sample(stamp, "quality", EEG_CHANNELS, values[:4], 10.0)]
+    if address == "/muse/elements/is_good" and len(values) >= 4:
+        # is_good is 1/0. Horseshoe uses 4 for a bad fit, which is what the pipeline checks.
+        mapped = tuple(1.0 if value >= 0.5 else 4.0 for value in values[:4])
+        return [Sample(stamp, "quality", EEG_CHANNELS, mapped, 10.0)]
     if address == "/muse/elements/blink" and (not values or values[0] != 0):
         return [Event(stamp, "blink", "blink", source="osc", color="#f2d479")]
     if address == "/muse/elements/jaw_clench" and (not values or values[0] != 0):
@@ -131,6 +206,7 @@ class OscMindMonitorInput:
         self.port = int(port)
         self.fs = float(fs)
         self.scale = float(scale)
+        self.clock = SampleClock(self.fs)
         self.bound_port = int(port)
         self._server: ThreadingOSCUDPServer | None = None
         self._thread: threading.Thread | None = None
@@ -179,7 +255,7 @@ class OscMindMonitorInput:
         if emit is None:
             return
         try:
-            for item in parse_message(address, args, fs=self.fs, scale=self.scale):
+            for item in parse_message(address, args, fs=self.fs, scale=self.scale, clock=self.clock):
                 emit(item)
         except Exception:
             logger.exception("osc_handler_failed", extra={"address": address})

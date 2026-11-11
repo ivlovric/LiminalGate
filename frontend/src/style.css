@@ -130,7 +130,7 @@ main {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
-  grid-template-rows: minmax(0, 1.25fr) minmax(160px, 0.7fr) auto;
+  grid-template-rows: minmax(150px, 0.75fr) minmax(0, 1fr) minmax(140px, 0.55fr) auto;
   gap: 0.7rem;
   padding: 0.7rem;
 }
@@ -146,11 +146,16 @@ main {
 }
 .panel header { display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem; }
 .panel h2 { margin: 0; font-size: 0.95rem; font-weight: 650; }
-.traces { grid-column: 1; grid-row: 1; }
-.spectrum { grid-column: 2; grid-row: 1; }
-.bands { grid-column: 1; grid-row: 2; }
-.ratios { grid-column: 2; grid-row: 2; }
-.markers { grid-column: 1 / -1; grid-row: 3; }
+.timeline { grid-column: 1 / -1; grid-row: 1; }
+.traces { grid-column: 1; grid-row: 2; }
+.spectrum { grid-column: 2; grid-row: 2; }
+.bands { grid-column: 1; grid-row: 3; }
+.ratios { grid-column: 2; grid-row: 3; }
+.markers { grid-column: 1 / -1; grid-row: 4; }
+.seg { display: flex; gap: 0.25rem; }
+.seg button { min-height: 32px; padding: 0.1rem 0.5rem; font-size: 0.8rem; }
+.seg button.on { background: #1e3a5f; border-color: var(--accent); }
+.panel header { flex-wrap: wrap; }
 
 .plot { flex: 1; min-height: 0; }
 .u-wrap { font-family: inherit; }
@@ -260,6 +265,6 @@ h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
     grid-template-rows: 280px 220px auto auto auto;
     overflow: auto;
   }
-  .traces, .spectrum, .bands, .ratios, .markers { grid-column: 1; grid-row: auto; }
+  .timeline, .traces, .spectrum, .bands, .ratios, .markers { grid-column: 1; grid-row: auto; }
   .row { grid-template-columns: 1fr 1fr; }
 }
