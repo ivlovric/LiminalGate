@@ -36,12 +36,12 @@
             <label><input type="checkbox" data-show="session" /> Session</label>
             <label><input type="checkbox" data-show="recordings" /> Recordings</label>
             <div class="menu-actions">
-              <button type="button" id="tone-btn">Tone</button>
               <button type="button" id="profile-btn">Profile</button>
               <button type="button" id="setup-btn">Setup</button>
             </div>
           </div>
         </div>
+        <button type="button" id="tone-btn" aria-pressed="false" title="Biofeedback tone: louder and higher when the active profile's target rises (alpha in alpha_relaxation/classic, theta peak in hypnagogic)">Tone</button>
         <button type="button" id="calm-btn" title="Band power and signal quality only, for a TV">Calm</button>
         <button type="button" id="record-btn" class="primary">Record</button>
       </div>
@@ -54,14 +54,19 @@
             <h2>Band power</h2>
           </button>
           <span class="muted">log10 µV² · good channels</span>
-          <div class="seg" id="minute-toggle">
-            <button type="button" data-minutes="1">1 min</button>
-            <button type="button" data-minutes="5" class="on">5 min</button>
-            <button type="button" data-minutes="15">15 min</button>
-            <button type="button" data-minutes="30">30 min</button>
+          <div class="chart-tools">
+            <div class="seg" id="minute-toggle">
+              <button type="button" data-minutes="1">1 min</button>
+              <button type="button" data-minutes="5" class="on">5 min</button>
+              <button type="button" data-minutes="15">15 min</button>
+              <button type="button" data-minutes="30">30 min</button>
+            </div>
+            <button type="button" id="device-lines" aria-pressed="false" title="Dashed lines: the same bands as reported by the device (Mind Monitor).">Device</button>
           </div>
         </header>
         <div class="panel-body">
+          <p class="legend-note">Solid lines are LiminalGate's own computation from the raw EEG (good channels, smoothed). Dashed lines are the same band as reported by the device (Mind Monitor).</p>
+          <div id="timeline-legend" class="band-legend" role="group" aria-label="Band power series"></div>
           <div id="timeline-plot" class="plot"></div>
         </div>
       </section>

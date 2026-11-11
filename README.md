@@ -16,7 +16,7 @@ The first view is the band-power chart (about 5 minutes), the relative band bars
 
 **Filtered** EEG is a 1–45 Hz display filter plus the powerline notch. **Raw** is the stream as received, including the ~800 µV offset. Recording is always raw.
 
-Click **View → Tone** once (browsers block audio until a click). Click **Record**, then **Stop**. The session is written under the `liminalgate-data` volume. Open **View → Recordings** to download it, or copy the volume out:
+Click **Tone** in the header (browsers block audio until a click). Click it again to turn the tone off. Click **Record**, then **Stop**. The session is written under the `liminalgate-data` volume. Open **View → Recordings** to download it, or copy the volume out:
 
 ```bash
 docker compose cp liminalgate:/data ./recordings
@@ -136,7 +136,7 @@ Build from the repository. The build context can be the git URL:
 https://github.com/ivlovric/LiminalGate.git#main
 ```
 
-The image is built locally (`liminalgate:0.4.1` in `compose.yaml`). **Re-pull image** does not rebuild that image. Bump the image tag and deploy again when you want a new build.
+The image is built locally (`liminalgate:0.4.2` in `compose.yaml`). **Re-pull image** does not rebuild that image. Bump the image tag and deploy again when you want a new build.
 
 If 8080 or 5000 is already taken on the host, publish different host ports:
 
@@ -177,7 +177,7 @@ A channel is left out of the mean when horseshoe or `is_good` says it is bad, wh
 
 OSC bursts are paced on a 1/fs clock. A packet of samples is not stacked on one timestamp, and a timestamp is never emitted earlier than the previous sample. A real pause becomes a gap in the line.
 
-The band chart is log10 µV² for delta, theta, alpha, beta, and gamma, smoothed with about a one-second time constant. Windows are 1, 5, 15, or 30 minutes. Device `/muse/elements/*_absolute` values are dashed lines when they arrive.
+The band chart is log10 µV² for delta, theta, alpha, beta, and gamma, smoothed with about a one-second time constant. Windows are 1, 5, 15, or 30 minutes. Solid lines are LiminalGate's own computation from the raw EEG (good channels, smoothed). Dashed lines are the same band as reported by the device (`/muse/elements/*_absolute`, Mind Monitor). **Device**, next to the minute buttons, shows those dashed lines. It starts off, and the choice is kept in the browser. Click a legend entry to hide that line. The spectrum axes are labelled Hz and log10 power.
 
 Heart rate uses `/muse/ppg` (ambient, IR, red, and any extra Athena channels), band-passed around 0.7–3.5 Hz. The strongest channel is peak-detected. Optics is used when PPG is absent. A headset path such as `/muse/elements/heart_rate` wins when it arrives. The header reads `no PPG data`, then `computing`, then the rate. `/muse/batt` index 3 is temperature in °C; the Heart card shows it only after that value arrives. There is no separate skin-temperature path.
 

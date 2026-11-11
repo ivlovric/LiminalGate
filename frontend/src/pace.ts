@@ -16,6 +16,8 @@ export interface ViewState {
   traceMode: "filtered" | "raw";
   /** Exponential smoothing time constant for the band chart, in seconds. */
   smoothSec: number;
+  /** Dashed Mind Monitor / device band lines on the band-power chart. */
+  showDevice: boolean;
 }
 
 /** First visit: one large band chart, the bars, and markers. EEG and spectrum are folded. */
@@ -27,6 +29,7 @@ export const DEFAULT_VIEW: ViewState = {
   traceWindow: 10,
   traceMode: "filtered",
   smoothSec: 1,
+  showDevice: false,
 };
 
 const CARD_SET = new Set<string>(CARDS);
@@ -80,6 +83,7 @@ export function loadView(raw: string | null): ViewState {
       traceWindow,
       traceMode,
       smoothSec,
+      showDevice: parsed.showDevice === true,
     };
   } catch {
     return { ...DEFAULT_VIEW, hidden: [...DEFAULT_VIEW.hidden], collapsed: [...DEFAULT_VIEW.collapsed] };
