@@ -4,6 +4,8 @@ Open, self-hosted neuro gateway for live EEG, custom bands, markers, and biofeed
 
 The default input is a synthetic theta-dominant signal, so the app runs with no headset. Mind Monitor OSC is the path that is meant to work with a Muse.
 
+![Dashboard with band power, EEG, the spectrum, and bands](docs/screenshot.png)
+
 ## Quick start
 
 ```bash
