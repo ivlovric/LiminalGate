@@ -1,0 +1,11 @@
+# Host network for BLE (BrainFlow) and LSL multicast.
+#   docker compose -f compose.yaml -f compose.host.yaml up
+# The published ports in compose.yaml are ignored while network_mode is host.
+# The app listens on 8080/tcp and 5000/udp on the host itself.
+# D-Bus is required by the BlueZ stack BrainFlow uses for Bluetooth.
+
+services:
+  liminalgate:
+    network_mode: host
+    volumes:
+      - /var/run/dbus:/var/run/dbus

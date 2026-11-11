@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liminalgate"
+version = "0.1.0"
+description = "Open, self-hosted neuro gateway for live EEG, custom bands, markers, and biofeedback."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ivica Lovrić" }]
+dependencies = [
+  "fastapi==0.115.14",
+  "uvicorn==0.34.3",
+  "websockets==17.4",
+  "numpy==1.26.4",
+  "scipy==1.14.1",
+  "python-osc==1.9.3",
+  "pyyaml==6.0.2",
+  "pyedflib==0.1.42",
+  "pydantic==2.10.6",
+  "pydantic-settings==2.7.1",
+]
+
+[project.optional-dependencies]
+devices = ["brainflow==5.22.2", "pylsl==1.18.6"]
+dev = ["pytest==8.3.5", "ruff==0.11.13", "httpx==0.28.1"]
+
+[project.scripts]
+liminalgate = "liminalgate.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["liminalgate*"]
+
+[tool.setuptools.package-data]
+liminalgate = ["profiles/defaults/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["liminalgate", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"liminalgate/inputs/osc_mindmonitor.py" = ["BLE001"]
+"liminalgate/inputs/brainflow_input.py" = ["BLE001"]
+"liminalgate/inputs/lsl_input.py" = ["BLE001"]
+"liminalgate/hub.py" = ["BLE001"]

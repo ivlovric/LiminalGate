@@ -1,0 +1,49 @@
+name: hypnagogic
+description: >
+  Hypnagogic threshold. A narrow 5.5–6 Hz peak sits inside theta, and the
+  theta/delta ratio tracks the drift out of wake. The tone follows the peak
+  and fades when alpha takes over.
+relative_range: [1.0, 45.0]
+window_sec: 4.0
+hop_sec: 0.25
+bands:
+  - {name: delta, f_low: 1.0, f_high: 4.0, color: "#6b7c93"}
+  - {name: theta, f_low: 4.0, f_high: 8.0, color: "#7aa2ff"}
+  - {name: theta_peak, f_low: 5.5, f_high: 6.0, color: "#d4a0ff"}
+  - {name: alpha, f_low: 8.0, f_high: 12.0, color: "#5dcaa5"}
+  - {name: beta, f_low: 12.0, f_high: 30.0, color: "#e0b15a"}
+ratios:
+  - {name: theta_over_delta, expression: theta/delta}
+  - {name: peak_over_delta, expression: theta_peak/delta}
+markers:
+  - {name: threshold, color: "#d4a0ff", hotkey: t, osc: null}
+  - {name: "Marker 1", color: "#7aa2ff", hotkey: "1", osc: 1}
+  - {name: "Marker 2", color: "#5dcaa5", hotkey: "2", osc: 2}
+  - {name: "Marker 3", color: "#e0b15a", hotkey: "3", osc: 3}
+  - {name: "Marker 4", color: "#e07a8a", hotkey: "4", osc: 4}
+  - {name: "Marker 5", color: "#c4b5fd", hotkey: "5", osc: 5}
+feedback:
+  - metric: theta_peak
+    source: relative
+    scope: mean
+    param: volume
+    in_min: 0.02
+    in_max: 0.25
+    out_min: 0.0
+    out_max: 0.75
+    smooth: 0.35
+    gate_metric: alpha
+    gate_source: relative
+    gate_scope: mean
+    gate_threshold: 0.45
+    gate_mode: mute_above
+  - metric: theta_peak
+    source: relative
+    scope: mean
+    param: frequency
+    in_min: 0.02
+    in_max: 0.25
+    out_min: 180
+    out_max: 420
+    smooth: 0.35
+    gate_mode: none
