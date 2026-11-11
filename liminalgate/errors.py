@@ -17,6 +17,12 @@ class SessionError(LiminalError):
     status_code = 409
 
 
+class NotFoundError(LiminalError):
+    """A session or file is not in the data directory."""
+
+    status_code = 404
+
+
 class ProfileError(LiminalError):
     """A band profile failed validation or could not be stored."""
 

@@ -10,6 +10,7 @@ import math
 import time
 from collections import deque
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -17,7 +18,7 @@ from pydantic import ValidationError
 from liminalgate import __version__
 from liminalgate.audio_out import ServerTone
 from liminalgate.display_filter import DisplayFilter, gap_before
-from liminalgate.errors import InputError, ProfileError, SessionError
+from liminalgate.errors import InputError, NotFoundError, ProfileError, SessionError
 from liminalgate.feedback import FeedbackEngine
 from liminalgate.heartrate import HeartRateEstimator
 from liminalgate.inputs import build_input
@@ -28,6 +29,15 @@ from liminalgate.settings import CONFIG_FIELDS, Settings, save_config
 from liminalgate.signals import Event, Sample
 
 logger = logging.getLogger("liminalgate.hub")
+
+
+def _without_aux(channels: tuple[str, ...], values: tuple[float, ...]) -> tuple[tuple[str, ...], tuple[float, ...]]:
+    keep = [index for index, name in enumerate(channels) if not str(name).upper().startswith("AUX")]
+    if len(keep) == len(channels):
+        return channels, values
+    if not keep:
+        return channels, values
+    return tuple(channels[index] for index in keep), tuple(values[index] for index in keep)
 
 
 def _jsonable(value: object) -> object:
@@ -266,6 +276,70 @@ class Hub:
     def sessions(self) -> list[dict]:
         return list_sessions(self.settings.data_dir)
 
+    def playback_control(self, action: str, position: float | None = None) -> dict:
+        plugin = self.input
+        if plugin is None or getattr(plugin, "name", "") != "playback":
+            raise InputError("playback is not running")
+        if action == "pause":
+            plugin.pause()
+        elif action == "resume":
+            plugin.resume()
+        elif action == "restart":
+            plugin.restart()
+        elif action == "seek":
+            plugin.seek(0.0 if position is None else float(position))
+        else:
+            raise InputError("unknown playback action")
+        brief = self._playback_brief() or {}
+        self.publish(self.status(), droppable=False)
+        return brief
+
+    def playback_info(self, raw: str) -> dict:
+        from liminalgate.inputs.playback import inspect_csv
+
+        return inspect_csv(self._allowed_csv(raw), self.settings.eeg_fs)
+
+    def save_playback_upload(self, name: str, data: bytes) -> dict:
+        from liminalgate.inputs.playback import inspect_csv
+
+        filename = Path(name).name
+        if not filename.lower().endswith(".csv"):
+            raise InputError("upload a .csv file")
+        if len(data) > 200_000_000:
+            raise InputError("file is larger than 200 MB")
+        if not data.strip():
+            raise InputError("the file is empty")
+        folder = self.settings.data_dir / "uploads"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = (folder / filename).resolve()
+        if dest.parent != folder.resolve():
+            raise InputError("bad file name")
+        dest.write_bytes(data)
+        return inspect_csv(dest, self.settings.eeg_fs)
+
+    def delete_recorded_session(self, subject: str, session_id: str) -> dict:
+        from liminalgate.library import delete_session, resolve_session
+
+        folder = resolve_session(self.settings.data_dir, subject, session_id)
+        recorder = self.recorder
+        if recorder is not None and recorder.active and recorder.session_dir.resolve() == folder:
+            raise SessionError("stop the recording before deleting it")
+        delete_session(folder)
+        return {"deleted": session_id}
+
+    def _allowed_csv(self, raw: str) -> Path:
+        path = Path(raw)
+        if not path.is_file():
+            raise NotFoundError("playback file not found")
+        resolved = path.resolve()
+        roots = [self.settings.data_dir.resolve()]
+        examples = Path("examples")
+        if examples.is_dir():
+            roots.append(examples.resolve())
+        if not any(root == resolved or root in resolved.parents for root in roots):
+            raise InputError("playback file is outside the data directory")
+        return resolved
+
     async def add_marker(self, name: str, source: str) -> dict:
         cleaned = name.strip()
         if not cleaned:
@@ -333,7 +407,7 @@ class Hub:
                     self._handle(item)
                     self._drain()
                 now = time.monotonic()
-                if self._pending and now - last_display >= 0.05:
+                if self._pending and now - last_display >= 0.1:
                     outgoing.append((self._display_message(), True))
                     self._pending.clear()
                     last_display = now
@@ -408,19 +482,21 @@ class Hub:
             self.pipeline.set_fs(item.rate)
             self.display_filter.configure(self.pipeline.fs, self.settings.powerline_hz)
             self._decim = self._decimation()
-        # Raw sample is what gets recorded and what the spectrum sees.
-        self.pipeline.add_eeg(item.t, item.channels, item.values)
+        # Recording keeps AUX. The plot and the spectrum do not: a railed AUX
+        # channel (~1450 µV) otherwise sets the scale for the EEG lanes.
         self._record(item)
-        filtered = self.display_filter.apply(item.channels, item.values)
+        channels, values = _without_aux(item.channels, item.values)
+        self.pipeline.add_eeg(item.t, channels, values)
+        filtered = self.display_filter.apply(channels, values)
         gap = gap_before(self._last_eeg_t, item.t, self.pipeline.fs)
         self._last_eeg_t = item.t
         self._gap_hold = self._gap_hold or gap
         self.samples_seen += 1
-        self._eeg_channels = item.channels
+        self._eeg_channels = channels
         self._decim_count += 1
         if self._decim_count >= self._decim:
             self._decim_count = 0
-            self._pending.append((item.t, item.values, filtered, self._gap_hold))
+            self._pending.append((item.t, values, filtered, self._gap_hold))
             self._gap_hold = False
 
     def _record(self, item: Sample) -> None:
@@ -488,6 +564,7 @@ class Hub:
             "battery": self.battery,
             "touching": self.touching,
             "recording": self._recording_brief(),
+            "playback": self._playback_brief(),
         }
 
     def _feature_message(self) -> dict | None:
@@ -557,7 +634,9 @@ class Hub:
         }
 
     def _decimation(self) -> int:
-        return max(1, int(round(self.pipeline.fs / max(1.0, self.settings.display_hz))))
+        # 32 Hz is enough for a 10-second lane and keeps a 2012-era browser responsive.
+        target = min(32.0, max(1.0, self.settings.display_hz))
+        return max(1, int(round(self.pipeline.fs / target)))
 
     def _hello(self) -> dict:
         return {
@@ -591,6 +670,22 @@ class Hub:
             "hr": self._hr_value,
             "heart": self._heart_public(),
             "osc_paths": self._osc_paths(),
+            "playback": self._playback_brief(),
+        }
+
+    def _playback_brief(self) -> dict | None:
+        plugin = self.input
+        state = getattr(plugin, "state", None)
+        if getattr(plugin, "name", "") != "playback" or not isinstance(state, dict):
+            return None
+        return {
+            "file": state.get("file") or "",
+            "position": state.get("position") or 0,
+            "duration": state.get("duration") or 0,
+            "loop": state.get("loop") or 0,
+            "paused": bool(state.get("paused")),
+            "rate": state.get("rate") or 0,
+            "warning": state.get("warning") or "",
         }
 
     def _sync_audio(self) -> None:

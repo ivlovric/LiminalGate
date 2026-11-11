@@ -72,6 +72,26 @@ interface Status {
   hr: number | null;
   heart?: Heart | null;
   osc_paths?: { path: string; count: number }[];
+  playback?: PlaybackInfo | null;
+}
+interface PlaybackInfo {
+  file: string;
+  position: number;
+  duration: number;
+  loop: number;
+  paused: boolean;
+  rate: number;
+  warning: string;
+}
+interface SessionRow {
+  subject_id: string;
+  session_id: string;
+  task: string;
+  local_start: string;
+  duration_sec: number | null;
+  eeg_samples: number;
+  streams: string[];
+  inventory: { name: string; bytes: number }[];
 }
 interface Heart {
   state: "no_ppg" | "computing" | "ready";
@@ -227,12 +247,49 @@ function showToast(message: string): void {
 
 function setConnection(label: string, kind: "live" | "bad" | "wait"): void {
   conn.textContent = label;
+  conn.title = label;
   conn.className = kind === "wait" ? "pill" : `pill ${kind}`;
   conn.dataset.state = kind;
 }
 
+function formatSec(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0.0s";
+  return `${value.toFixed(1)}s`;
+}
+
+let playbackWarning = "";
+let seeking = false;
+
+function playbackText(play: PlaybackInfo): string {
+  const state = play.paused ? "paused" : "playback";
+  const loop = play.loop > 0 ? ` · loop ${play.loop}` : "";
+  return `${state} ${play.file} ${formatSec(play.position)}/${formatSec(play.duration)}${loop}`;
+}
+
+function applyPlayback(play: PlaybackInfo | null | undefined): void {
+  const bar = document.getElementById("transport");
+  const pause = document.getElementById("play-pause");
+  const seek = document.getElementById("play-seek");
+  if (!(bar instanceof HTMLElement) || !(pause instanceof HTMLButtonElement) || !(seek instanceof HTMLInputElement)) return;
+  if (!play?.file) {
+    bar.hidden = true;
+    playbackWarning = "";
+    return;
+  }
+  bar.hidden = false;
+  pause.textContent = play.paused ? "Resume" : "Pause";
+  const duration = Math.max(play.duration, 0.1);
+  seek.max = String(duration);
+  if (!seeking) seek.value = String(Math.min(duration, Math.max(0, play.position)));
+  if (play.warning && play.warning !== playbackWarning) {
+    playbackWarning = play.warning;
+    showToast(play.warning);
+  }
+}
+
 function applyRecording(rec: Recording | null): void {
   if (!rec) {
+    if (recordBtn.dataset.recording === "yes") void loadRecordings();
     if (!recordingId && recordBtn.dataset.recording !== "yes") return;
     recordingId = null;
     recordAnchor = null;
@@ -418,6 +475,65 @@ function applyView(): void {
     button.classList.toggle("on", button.dataset.mode === traceMode);
   }
   saveView();
+  if (!view.hidden.includes("recordings") && !view.calm) void loadRecordings();
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function downloadFile(path: string, filename: string): Promise<void> {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(path, { headers });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadRecordings(): Promise<void> {
+  const host = document.getElementById("recordings");
+  const panel = document.querySelector('[data-card="recordings"]');
+  if (!host || !(panel instanceof HTMLElement) || panel.hidden) return;
+  try {
+    const rows = await api<SessionRow[]>("/api/sessions");
+    if (!rows.length) {
+      host.innerHTML = `<p class="hint">No sessions yet. Record one, then it will show up here.</p>`;
+      return;
+    }
+    host.innerHTML = rows
+      .map((row) => {
+        const subject = encodeURIComponent(row.subject_id);
+        const session = encodeURIComponent(row.session_id);
+        const when = row.local_start ? row.local_start.replace("T", " ") : row.session_id;
+        const duration = row.duration_sec == null ? "—" : formatSec(row.duration_sec);
+        const streams = (row.streams ?? []).join(", ") || "session";
+        const files = (row.inventory ?? [])
+          .map(
+            (file) =>
+              `<button type="button" data-file="${esc(file.name)}" data-subject="${esc(row.subject_id)}" data-session="${esc(row.session_id)}">${esc(file.name.split("/").pop() || file.name)} · ${formatBytes(file.bytes)}</button>`,
+          )
+          .join("");
+        return `<article class="recording">
+          <header><strong>${esc(when)}</strong> <span class="muted">${esc(row.task)} · ${duration} · ${row.eeg_samples.toLocaleString()} EEG · ${esc(streams)}</span></header>
+          <div class="files">
+            <button type="button" data-zip="${subject}/${session}">Download zip</button>
+            <button type="button" data-delete="${esc(row.subject_id)}" data-session="${esc(row.session_id)}">Delete</button>
+            ${files}
+          </div>
+        </article>`;
+      })
+      .join("");
+  } catch (error) {
+    host.innerHTML = `<p class="hint">${esc(error instanceof Error ? error.message : "Could not list sessions")}</p>`;
+  }
 }
 
 function renderBands(bands: Record<string, BandPower>): void {
@@ -532,7 +648,7 @@ function paintTrack(): void {
     .filter((event) => now - event.t < span)
     .filter((event) => showAuto || (event.kind !== "blink" && event.kind !== "jaw_clench"))
     .map((event) => {
-      const left = ((event.t - (now - span)) / span) * 100;
+      const left = Math.min(97, Math.max(0, ((event.t - (now - span)) / span) * 100));
       return `<i title="${esc(event.kind)} ${esc(event.name)}" style="left:${left}%;background:${esc(event.color)}"></i>`;
     })
     .join("");
@@ -550,8 +666,13 @@ function applyStatus(status: Status): void {
   inputLabel.textContent = `${input.type} · ${input.eeg_fs.toFixed(0)} Hz · scale ${input.eeg_scale}`;
   eegMeta.textContent = input.error ? input.error : `${input.samples_seen.toLocaleString()} samples`;
   if (socket?.readyState === WebSocket.OPEN) {
-    setConnection(input.error ? "input error" : input.running ? "live" : "stopped", input.error || !input.running ? "bad" : "live");
+    if (status.playback?.file) {
+      setConnection(playbackText(status.playback), status.playback.paused || input.error ? "wait" : "live");
+    } else {
+      setConnection(input.error ? "input error" : input.running ? "live" : "stopped", input.error || !input.running ? "bad" : "live");
+    }
   }
+  applyPlayback(status.playback);
   showHeart(status.heart ?? (status.hr != null ? { state: "ready", bpm: status.hr, rmssd: null, quality: null, channel: null, source: null } : null));
   const paths = document.getElementById("cfg-paths");
   if (paths && drawerMode === "setup") {
@@ -593,7 +714,12 @@ function onMessage(raw: string): void {
       const min = newest - 35;
       while (traceHistory.length > 2 && traceHistory[0].t < min) traceHistory.shift();
     }
-    syncTraces(false);
+    if (cardShown("eeg")) syncTraces(false);
+    const playback = message.playback as PlaybackInfo | null | undefined;
+    if (playback?.file) {
+      setConnection(playbackText(playback), playback.paused ? "wait" : "live");
+      applyPlayback(playback);
+    }
     if (Array.isArray(message.quality)) lastQuality = message.quality as number[];
     renderHorseshoe(eegChannels, lastQuality);
     showHeart(message.heart as Heart | undefined, typeof message.t === "number" ? message.t : undefined);
@@ -676,7 +802,7 @@ function connect(): void {
   const next = new WebSocket(`${proto}://${location.host}/ws${query}`);
   socket = next;
   setConnection("connecting", "wait");
-  next.onopen = () => setConnection("live", "live");
+  next.onopen = () => setConnection("connected", "wait");
   next.onmessage = (event) => onMessage(String(event.data));
   next.onclose = () => {
     if (socket !== next) return;
@@ -952,7 +1078,9 @@ function renderSetupForm(): void {
       ${field("File", `<select id="cfg-file"><option value="">Custom path…</option></select>`)}
       ${field("Path", `<input id="cfg-playback" value="${esc(cfg?.playback_path ?? "")}" placeholder="/data/demo.csv" />`)}
       ${field("Speed", `<input id="cfg-speed" type="number" min="0" step="0.1" value="${cfg?.playback_speed ?? 1}" />`)}
-      <p class="hint">0 plays as fast as possible. 1 follows the file's timestamps.</p>
+      <p class="hint">0 plays as fast as possible. 1 follows the sample rate. AUX columns are not EEG lanes.</p>
+      <label class="hint">Upload a CSV<input id="cfg-upload" type="file" accept=".csv,text/csv" /></label>
+      <p id="cfg-play-note" class="hint"></p>
     </div>
     <div class="stack for-input" data-for="synthetic" ${selected === "synthetic" ? "" : "hidden"}>
       <p class="hint">Nothing else to set. Apply starts the built-in theta-dominant signal.</p>
@@ -1026,10 +1154,15 @@ async function fillSetupLists(): Promise<void> {
   const currentPath = text(document.getElementById("cfg-playback"));
   if (files instanceof HTMLSelectElement) {
     try {
-      const body = await api<{ files: string[] }>("/api/playback/files");
-      const options = body.files.map((path) => `<option value="${esc(path)}">${esc(path)}</option>`).join("");
+      const body = await api<{ files: { path: string; name: string; eeg: boolean }[] }>("/api/playback/files");
+      const options = body.files
+        .map((file) => {
+          const label = file.eeg ? file.name : `${file.name} (not EEG)`;
+          return `<option value="${esc(file.path)}"${file.eeg ? "" : " disabled"}>${esc(label)}</option>`;
+        })
+        .join("");
       files.innerHTML = `<option value="">Custom path…</option>${options}`;
-      if (currentPath && body.files.includes(currentPath)) files.value = currentPath;
+      if (currentPath && body.files.some((file) => file.path === currentPath && file.eeg)) files.value = currentPath;
     } catch {
       /* the path field still works */
     }
@@ -1242,12 +1375,55 @@ function applySetup(): void {
     });
 }
 
+async function describePlayback(path: string): Promise<void> {
+  const note = document.getElementById("cfg-play-note");
+  if (!note || !path) return;
+  try {
+    const info = await api<{ warning: string; rate: number; duration: number; eeg: boolean }>(
+      `/api/playback/info?path=${encodeURIComponent(path)}`,
+    );
+    const bits = [`${info.rate.toFixed(1)} Hz`, `${info.duration.toFixed(1)} s`];
+    if (!info.eeg) bits.push("not an EEG file");
+    if (info.warning) bits.push(info.warning);
+    note.textContent = bits.join(" · ");
+  } catch (error) {
+    note.textContent = error instanceof Error ? error.message : "";
+  }
+}
+
+async function uploadPlayback(file: File, input: HTMLInputElement): Promise<void> {
+  const note = document.getElementById("cfg-play-note");
+  if (note) note.textContent = "Uploading…";
+  try {
+    const saved = await api<{ path: string; warning: string }>(`/api/playback/upload?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      body: await file.arrayBuffer(),
+      headers: { "Content-Type": "text/csv" },
+    });
+    const path = document.getElementById("cfg-playback");
+    if (path instanceof HTMLInputElement) path.value = saved.path;
+    if (note) note.textContent = saved.warning || "Uploaded. Apply to play it.";
+    await fillSetupLists();
+    const files = document.getElementById("cfg-file");
+    if (files instanceof HTMLSelectElement) files.value = saved.path;
+  } catch (error) {
+    if (note) note.textContent = error instanceof Error ? error.message : "Upload failed";
+  } finally {
+    input.value = "";
+  }
+}
+
 drawerBody.addEventListener("change", (event) => {
   const target = event.target;
+  if (target instanceof HTMLInputElement && target.id === "cfg-upload" && target.files?.[0]) {
+    void uploadPlayback(target.files[0], target);
+    return;
+  }
   if (!(target instanceof HTMLSelectElement)) return;
   if (target.id === "cfg-file" && target.value) {
     const path = document.getElementById("cfg-playback");
     if (path instanceof HTMLInputElement) path.value = target.value;
+    void describePlayback(target.value);
   }
   if (target.id === "cfg-lsl-list") {
     const name = document.getElementById("cfg-lsl");
@@ -1465,6 +1641,60 @@ document.addEventListener("click", (event) => {
   if (viewBtn?.parentElement?.contains(event.target)) return;
   viewMenu.hidden = true;
   viewBtn?.setAttribute("aria-expanded", "false");
+});
+
+document.getElementById("recordings")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const zip = target.dataset.zip;
+  if (zip) {
+    const [subject, session] = zip.split("/");
+    void downloadFile(`/api/sessions/${subject}/${session}/archive`, `ses-${session}.zip`).catch((error: Error) => showToast(error.message));
+    return;
+  }
+  const file = target.dataset.file;
+  if (file && target.dataset.subject && target.dataset.session) {
+    const subject = encodeURIComponent(target.dataset.subject);
+    const session = encodeURIComponent(target.dataset.session);
+    const name = file.split("/").pop() || "download";
+    void downloadFile(`/api/sessions/${subject}/${session}/files/${file.split("/").map(encodeURIComponent).join("/")}`, name).catch(
+      (error: Error) => showToast(error.message),
+    );
+    return;
+  }
+  if (target.dataset.delete && target.dataset.session) {
+    const subject = target.dataset.delete;
+    const session = target.dataset.session;
+    if (!window.confirm("Delete this session from disk?")) return;
+    void api(`/api/sessions/${encodeURIComponent(subject)}/${encodeURIComponent(session)}`, { method: "DELETE" })
+      .then(() => loadRecordings())
+      .catch((error: Error) => showToast(error.message));
+  }
+});
+
+document.getElementById("recordings-refresh")?.addEventListener("click", () => void loadRecordings());
+
+document.getElementById("play-pause")?.addEventListener("click", () => {
+  const pause = document.getElementById("play-pause");
+  const action = pause?.textContent === "Resume" ? "resume" : "pause";
+  void api("/api/playback/control", { method: "POST", body: JSON.stringify({ action }) }).catch((error: Error) => showToast(error.message));
+});
+document.getElementById("play-restart")?.addEventListener("click", () => {
+  void api("/api/playback/control", { method: "POST", body: JSON.stringify({ action: "restart" }) }).catch((error: Error) =>
+    showToast(error.message),
+  );
+});
+const playSeek = document.getElementById("play-seek");
+playSeek?.addEventListener("pointerdown", () => {
+  seeking = true;
+});
+playSeek?.addEventListener("change", () => {
+  seeking = false;
+  if (!(playSeek instanceof HTMLInputElement)) return;
+  void api("/api/playback/control", {
+    method: "POST",
+    body: JSON.stringify({ action: "seek", position: Number(playSeek.value) }),
+  }).catch((error: Error) => showToast(error.message));
 });
 
 markerButtons.addEventListener("click", (event) => {

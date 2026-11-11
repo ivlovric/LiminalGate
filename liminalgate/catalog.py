@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 
@@ -36,13 +37,13 @@ def discover_lsl(timeout: float = 1.2) -> dict:
     return {"available": True, "streams": streams, "error": None}
 
 
-def playback_files(data_dir: Path, extra: Path | None = None) -> list[str]:
-    """CSV paths the playback picker can offer. The configured file is not invented."""
+def playback_files(data_dir: Path, extra: Path | None = None) -> list[dict[str, object]]:
+    """CSV files the playback picker can offer. Non-EEG files stay visible but are labeled."""
 
     roots = [data_dir]
     if extra is not None:
         roots.append(extra)
-    found: list[str] = []
+    found: list[dict[str, object]] = []
     seen: set[str] = set()
     for root in roots:
         if not root.is_dir():
@@ -54,7 +55,22 @@ def playback_files(data_dir: Path, extra: Path | None = None) -> list[str]:
             if text in seen:
                 continue
             seen.add(text)
-            found.append(text)
+            eeg = _header_has_eeg(path)
+            found.append({"path": text, "name": path.name, "eeg": eeg})
             if len(found) >= 200:
                 return found
     return found
+
+
+def _header_has_eeg(path: Path) -> bool:
+    from liminalgate.inputs.playback import ColumnMap
+
+    try:
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+    except OSError:
+        return False
+    if not header:
+        return False
+    return ColumnMap([str(name) for name in header]).has_eeg

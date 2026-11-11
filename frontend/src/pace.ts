@@ -1,6 +1,6 @@
 /** View layout and the smoothing used by the calm dashboard. Pure functions, no DOM. */
 
-export const CARDS = ["timeline", "eeg", "spectrum", "bands", "heart", "ratios", "markers", "session"] as const;
+export const CARDS = ["timeline", "eeg", "spectrum", "bands", "heart", "ratios", "markers", "session", "recordings"] as const;
 export type CardId = (typeof CARDS)[number];
 
 export const MINUTE_CHOICES = [1, 5, 15, 30] as const;
@@ -20,7 +20,7 @@ export interface ViewState {
 
 /** First visit: one large band chart, the bars, and markers. EEG and spectrum are folded. */
 export const DEFAULT_VIEW: ViewState = {
-  hidden: ["ratios", "session"],
+  hidden: ["ratios", "session", "recordings"],
   collapsed: ["eeg", "spectrum", "heart"],
   calm: false,
   minutes: 5,

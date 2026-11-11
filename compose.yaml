@@ -1,4 +1,4 @@
-# LiminalGate v0.1
+# LiminalGate v0.4
 # The dashboard is meant for other devices on the LAN (a TV, a phone, a laptop),
 # so the web and OSC ports are published on every interface. Bind them to
 # loopback only with:
@@ -8,7 +8,7 @@
 services:
   liminalgate:
     build: .
-    image: liminalgate:0.1.0
+    image: liminalgate:0.4.0
     restart: unless-stopped
     environment:
       LIMINALGATE_INPUT: ${LIMINALGATE_INPUT:-synthetic}
@@ -27,7 +27,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=2).read()",
+          "import os,urllib.request; p=os.environ.get('LIMINALGATE_PORT','8080'); urllib.request.urlopen('http://127.0.0.1:%s/api/health'%p, timeout=2).read()",
         ]
       interval: 10s
       timeout: 3s

@@ -81,9 +81,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   padding: 0.2rem 0.7rem;
   background: #243044;
   font-size: 0.85rem;
+  max-width: min(32rem, 46vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pill.live { background: #14532d; color: #bbf7d0; }
 .pill.bad { background: #7f1d1d; color: #fecaca; }
+.transport { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.transport[hidden] { display: none; }
+.transport button { min-height: 32px; padding: 0.1rem 0.55rem; font-size: 0.8rem; }
+.transport input[type="range"] { width: 7.5rem; accent-color: var(--accent); }
 
 .muted { color: var(--muted); }
 .actions { display: flex; gap: 0.45rem; margin-left: auto; flex-wrap: wrap; }
@@ -128,40 +136,45 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 main {
   min-height: 0;
   overflow: auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.9fr);
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 0.7rem;
   padding: 0.7rem;
 }
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.9fr);
+  gap: 0.7rem;
+  align-items: start;
+}
+.split:not(:has(.panel:not([hidden]))) { display: none; }
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   padding: 0.55rem 0.75rem 0.7rem;
+  overflow: hidden;
 }
 .panel header { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .panel h2 { margin: 0; font-size: 0.95rem; font-weight: 650; }
 .panel[hidden] { display: none; }
-.panel[data-card="timeline"] { grid-column: 1 / -1; min-height: min(52vh, 640px); }
-.panel[data-card="eeg"] { grid-column: 1; min-height: 260px; }
-.panel[data-card="spectrum"] { grid-column: 2; min-height: 260px; }
-.panel[data-card="bands"] { grid-column: 1; }
-.panel[data-card="heart"] { grid-column: 2; min-height: 220px; }
+.panel[data-card="bands"] { align-self: start; overflow: visible; }
+.panel[data-card="heart"] { align-self: start; }
+.panel[data-card="heart"] .plot { flex: 0 0 140px; height: 140px; min-height: 140px; max-height: 140px; }
 .hr-readout span { font-size: 0.95rem; }
 .hr-readout.ready span { font-size: 1.35rem; }
 .hr-readout small { font-size: 0.75rem; }
 .hr-line { margin: 0.2rem 0; }
 .hr-line strong { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
 .path-list { list-style: none; margin: 0; padding: 0; max-height: 8rem; overflow: auto; font-size: 0.8rem; color: var(--muted); }
-.auto-events { display: flex; align-items: center; gap: 0.35rem; }
-.panel[data-card="ratios"] { grid-column: 2; }
+.auto-events { display: flex; align-items: center; gap: 0.35rem; margin: 0; white-space: nowrap; }
 .panel[data-card="markers"],
-.panel[data-card="session"] { grid-column: 1 / -1; }
+.panel[data-card="session"] { width: 100%; }
 .panel.collapsed { min-height: 0; }
 .panel.collapsed .panel-body { display: none; }
 .panel-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -219,11 +232,15 @@ body.calm .panel[data-card="timeline"] {
 }
 body.calm .u-legend { font-size: 1rem !important; }
 
-.plot { flex: 1; min-height: 0; }
+.plot { width: 100%; overflow: hidden; }
+.plot .uplot { width: 100% !important; max-width: 100%; }
+.panel[data-card="timeline"] .plot { height: min(42vh, 480px); min-height: 220px; flex: 0 0 auto; }
+.panel[data-card="eeg"] .plot,
+.panel[data-card="spectrum"] .plot { height: 240px; min-height: 240px; max-height: 240px; flex: 0 0 240px; }
 .u-wrap { font-family: inherit; }
 .u-legend { color: var(--text) !important; font-size: 0.75rem !important; }
 
-.bars { display: flex; flex-direction: column; gap: 0.35rem; overflow: auto; }
+.bars { display: flex; flex-direction: column; gap: 0.45rem; overflow: visible; }
 .band { display: grid; grid-template-columns: 8.5rem 1fr 4.2rem; gap: 0.55rem; align-items: center; }
 .band b { font-weight: 650; }
 .track-bar, .meter {
@@ -254,6 +271,26 @@ body.calm .u-legend { font-size: 1rem !important; }
   background: #0c1017;
   border-radius: 8px;
   margin: 0.35rem 0 0.55rem;
+  overflow: hidden;
+}
+.recordings { display: flex; flex-direction: column; gap: 0.55rem; }
+.recording {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--line);
+}
+.recording header { justify-content: flex-start; }
+.recording .files { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.recording button, .recording a {
+  min-height: 32px;
+  font-size: 0.8rem;
+  color: inherit;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.15rem 0.5rem;
+  background: #0c1017;
 }
 .track i {
   position: absolute;
@@ -341,16 +378,9 @@ h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
 @media (max-width: 980px) {
   .top { flex-wrap: wrap; }
   .actions { margin-left: 0; }
-  main { grid-template-columns: 1fr; }
-  .panel[data-card="timeline"],
-  .panel[data-card="eeg"],
-  .panel[data-card="spectrum"],
-  .panel[data-card="bands"],
-  .panel[data-card="ratios"],
-  .panel[data-card="markers"],
-  .panel[data-card="session"] { grid-column: 1; min-height: 0; }
-  .panel[data-card="timeline"]:not(.collapsed) { min-height: 320px; }
-  .panel[data-card="eeg"]:not(.collapsed),
-  .panel[data-card="spectrum"]:not(.collapsed) { min-height: 220px; }
+  .split { grid-template-columns: 1fr; }
+  .panel[data-card="timeline"] .plot { height: 320px; }
+  .panel[data-card="eeg"] .plot,
+  .panel[data-card="spectrum"] .plot { height: 200px; min-height: 200px; max-height: 200px; flex-basis: 200px; }
   .row { grid-template-columns: 1fr 1fr; }
 }

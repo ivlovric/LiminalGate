@@ -1,11 +1,18 @@
 # Host network for BLE (BrainFlow) and LSL multicast.
-#   docker compose -f compose.yaml -f compose.host.yaml up
-# The published ports in compose.yaml are ignored while network_mode is host.
-# The app listens on 8080/tcp and 5000/udp on the host itself.
-# D-Bus is required by the BlueZ stack BrainFlow uses for Bluetooth.
+#   docker compose -f compose.yaml -f compose.host.yaml up --build
+# Published ports in compose.yaml are ignored while network_mode is host.
+# The process binds LIMINALGATE_PORT (default 8080) and LIMINALGATE_OSC_PORT
+# (default 5000) on the host itself. Change both when those ports are taken.
+# BlueZ needs the host D-Bus socket, and AppArmor has to leave the container
+# unconfined or the Bluetooth socket is blocked.
 
 services:
   liminalgate:
     network_mode: host
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      LIMINALGATE_PORT: ${LIMINALGATE_PORT:-8080}
+      LIMINALGATE_OSC_PORT: ${LIMINALGATE_OSC_PORT:-5000}
     volumes:
       - /var/run/dbus:/var/run/dbus

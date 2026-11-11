@@ -8,12 +8,15 @@ from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from liminalgate.brainflow_scan import list_boards, scan_headsets
 from liminalgate.catalog import discover_lsl, playback_files
 from liminalgate.errors import ProfileError
 from liminalgate.hub import Hub
+from liminalgate.library import file_inside, resolve_session, session_files, zip_session
 from liminalgate.profiles import Profile
 
 router = APIRouter(prefix="/api")
@@ -187,7 +190,60 @@ async def stop_session(hub: Hub = Depends(get_hub)) -> dict:
 
 @router.get("/sessions", tags=["recording"], summary="List recorded sessions")
 def sessions(hub: Hub = Depends(get_hub)) -> list[dict]:
-    return hub.sessions()
+    rows = hub.sessions()
+    for row in rows:
+        folder = Path(str(row.get("path") or ""))
+        row["inventory"] = session_files(folder) if folder.is_dir() else []
+    return rows
+
+
+@router.get("/sessions/{subject}/{session_id}/archive", tags=["recording"], summary="Download a session as a zip")
+async def session_archive(subject: str, session_id: str, hub: Hub = Depends(get_hub)) -> RawResponse:
+    folder = resolve_session(hub.settings.data_dir, subject, session_id)
+    payload = await asyncio.to_thread(zip_session, folder)
+    filename = f"sub-{subject}_ses-{session_id}.zip"
+    return RawResponse(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/sessions/{subject}/{session_id}/files/{relative:path}",
+    tags=["recording"],
+    summary="Download one session file",
+)
+def session_file(subject: str, session_id: str, relative: str, hub: Hub = Depends(get_hub)) -> FileResponse:
+    folder = resolve_session(hub.settings.data_dir, subject, session_id)
+    target = file_inside(folder, relative)
+    return FileResponse(target, filename=target.name)
+
+
+@router.delete("/sessions/{subject}/{session_id}", tags=["recording"], summary="Delete one session")
+async def delete_one_session(subject: str, session_id: str, hub: Hub = Depends(get_hub)) -> dict:
+    return await asyncio.to_thread(hub.delete_recorded_session, subject, session_id)
+
+
+class PlaybackControlBody(BaseModel):
+    action: str
+    position: float | None = None
+
+
+@router.post("/playback/control", tags=["config"], summary="Pause, resume, restart, or seek playback")
+def playback_control(body: PlaybackControlBody, hub: Hub = Depends(get_hub)) -> dict:
+    return hub.playback_control(body.action, body.position)
+
+
+@router.get("/playback/info", tags=["config"], summary="Duration and warnings for one CSV")
+def playback_info(path: str, hub: Hub = Depends(get_hub)) -> dict:
+    return hub.playback_info(path)
+
+
+@router.post("/playback/upload", tags=["config"], summary="Save an uploaded CSV into the data directory")
+async def playback_upload(request: Request, name: str = "recording.csv", hub: Hub = Depends(get_hub)) -> dict:
+    data = await request.body()
+    return await asyncio.to_thread(hub.save_playback_upload, name, data)
 
 
 @router.post("/markers", tags=["markers"], summary="Insert a marker into the live stream")

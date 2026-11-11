@@ -36,12 +36,14 @@ export class RollingPlot {
   private glideEnabled: boolean;
   private retainSec: number;
   private paused = false;
-  private raf = 0;
+  private pending = 0;
   private lastDraw = 0;
   private viewEnd = 0;
   private anchored = false;
   private targetEnd = 0;
   private labels: string[] = [];
+  private lastW = 0;
+  private lastH = 0;
 
   constructor(
     private el: HTMLElement,
@@ -64,6 +66,7 @@ export class RollingPlot {
   setPaused(paused: boolean): void {
     const was = this.paused;
     this.paused = paused;
+    if (paused) this.clearPending();
     if (was && !paused) {
       if (this.labels.length) this.ensure(this.labels);
       requestAnimationFrame(() => {
@@ -133,16 +136,27 @@ export class RollingPlot {
     }
   }
 
+  private clearPending(): void {
+    if (!this.pending) return;
+    cancelAnimationFrame(this.pending);
+    window.clearTimeout(this.pending);
+    this.pending = 0;
+  }
+
   private kick(): void {
-    if (this.raf || this.paused) return;
-    this.raf = requestAnimationFrame((now) => this.tick(now));
+    if (this.pending || this.paused) return;
+    this.pending = requestAnimationFrame((now) => this.tick(now));
   }
 
   private tick(now: number): void {
-    this.raf = 0;
+    this.pending = 0;
     if (this.paused) return;
     if (!shouldDraw(now, this.lastDraw, this.maxFps)) {
-      this.kick();
+      const wait = Math.max(20, 1000 / this.maxFps - (now - this.lastDraw));
+      this.pending = window.setTimeout(() => {
+        this.pending = 0;
+        this.kick();
+      }, wait);
       return;
     }
     const dt = this.lastDraw ? (now - this.lastDraw) / 1000 : 0;
@@ -230,8 +244,12 @@ export class RollingPlot {
 
   private resize(): void {
     if (!this.plot || this.paused) return;
-    const { width, height } = sizeOf(this.el);
+    const width = this.el.clientWidth;
+    const height = this.el.clientHeight;
     if (width < 40 || height < 40) return;
+    if (width === this.lastW && height === this.lastH) return;
+    this.lastW = width;
+    this.lastH = height;
     this.plot.setSize({ width, height });
   }
 }
