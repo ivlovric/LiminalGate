@@ -139,13 +139,14 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  padding: 0.7rem;
+  padding: 0.7rem 0.7rem 2.75rem;
 }
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.9fr);
   gap: 0.7rem;
   align-items: start;
+  flex: 0 0 auto;
 }
 .split:not(:has(.panel:not([hidden]))) { display: none; }
 
@@ -157,6 +158,7 @@ main {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
   padding: 0.55rem 0.75rem 0.7rem;
   overflow: hidden;
 }
@@ -177,7 +179,8 @@ main {
 .panel[data-card="session"] { width: 100%; }
 .panel.collapsed { min-height: 0; }
 .panel.collapsed .panel-body { display: none; }
-.panel-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.panel-body { display: flex; flex-direction: column; flex: 0 0 auto; }
+body.calm .panel[data-card="timeline"] .panel-body { flex: 1 1 auto; min-height: 0; }
 .chevron {
   display: flex;
   align-items: center;
@@ -226,15 +229,22 @@ body.calm #conn.live, body.calm #view-btn, body.calm #record-btn { display: none
 body.calm .hsi i { width: 1.35rem; height: 1.35rem; }
 body.calm .hsi span { font-size: 1rem; }
 body.calm .panel[data-card="timeline"] {
+  height: calc(100vh - 5.2rem);
   min-height: calc(100vh - 5.2rem);
   border-color: transparent;
   background: transparent;
+}
+body.calm .panel[data-card="timeline"] .plot {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
 }
 body.calm .u-legend { font-size: 1rem !important; }
 
 .plot { width: 100%; overflow: hidden; }
 .plot .uplot { width: 100% !important; max-width: 100%; }
-.panel[data-card="timeline"] .plot { height: min(42vh, 480px); min-height: 220px; flex: 0 0 auto; }
+.panel[data-card="timeline"] .plot { height: 320px; min-height: 320px; max-height: 320px; flex: 0 0 320px; }
 .panel[data-card="eeg"] .plot,
 .panel[data-card="spectrum"] .plot { height: 240px; min-height: 240px; max-height: 240px; flex: 0 0 240px; }
 .u-wrap { font-family: inherit; }
@@ -281,17 +291,27 @@ body.calm .u-legend { font-size: 1rem !important; }
   border-top: 1px solid var(--line);
 }
 .recording header { justify-content: flex-start; }
-.recording .files { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.recording .files { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
 .recording button, .recording a {
-  min-height: 32px;
+  min-height: 36px;
   font-size: 0.8rem;
   color: inherit;
   text-decoration: none;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.15rem 0.5rem;
+  padding: 0.15rem 0.65rem;
   background: #0c1017;
 }
+.file-list { flex: 1 0 100%; }
+.file-list summary {
+  cursor: pointer;
+  color: var(--muted);
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  width: fit-content;
+}
+.file-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.15rem 0 0.35rem; }
 .track i {
   position: absolute;
   top: 0.25rem;
@@ -299,6 +319,7 @@ body.calm .u-legend { font-size: 1rem !important; }
   height: 1.1rem;
   border-radius: 2px;
 }
+.panel[data-card="markers"] { overflow: visible; }
 .marker-buttons { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .marker-buttons button { border-width: 2px; }
 
@@ -379,7 +400,7 @@ h3 { margin: 0.8rem 0 0.3rem; font-size: 0.95rem; }
   .top { flex-wrap: wrap; }
   .actions { margin-left: 0; }
   .split { grid-template-columns: 1fr; }
-  .panel[data-card="timeline"] .plot { height: 320px; }
+  .panel[data-card="timeline"] .plot { height: 280px; min-height: 280px; max-height: 280px; flex-basis: 280px; }
   .panel[data-card="eeg"] .plot,
   .panel[data-card="spectrum"] .plot { height: 200px; min-height: 200px; max-height: 200px; flex-basis: 200px; }
   .row { grid-template-columns: 1fr 1fr; }

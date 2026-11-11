@@ -136,7 +136,7 @@ Build from the repository. The build context can be the git URL:
 https://github.com/ivlovric/LiminalGate.git#main
 ```
 
-The image is built locally (`liminalgate:0.4.0` in `compose.yaml`). **Re-pull image** does not rebuild that image. Bump the image tag and deploy again when you want a new build.
+The image is built locally (`liminalgate:0.4.1` in `compose.yaml`). **Re-pull image** does not rebuild that image. Bump the image tag and deploy again when you want a new build.
 
 If 8080 or 5000 is already taken on the host, publish different host ports:
 

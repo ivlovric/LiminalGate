@@ -8,7 +8,7 @@
 services:
   liminalgate:
     build: .
-    image: liminalgate:0.4.0
+    image: liminalgate:0.4.1
     restart: unless-stopped
     environment:
       LIMINALGATE_INPUT: ${LIMINALGATE_INPUT:-synthetic}
