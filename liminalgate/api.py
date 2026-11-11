@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
+from liminalgate.catalog import discover_lsl, playback_files
 from liminalgate.errors import ProfileError
 from liminalgate.hub import Hub
 from liminalgate.profiles import Profile
@@ -67,6 +70,19 @@ def health() -> Health:
 @router.get("/status", tags=["system"], summary="Live input, recording, and profile")
 def status(hub: Hub = Depends(get_hub)) -> dict:
     return hub.status()
+
+
+@router.get("/lsl/streams", tags=["config"], summary="LSL streams visible on this machine")
+async def lsl_streams() -> dict:
+    """Short resolve. Missing pylsl returns an empty list and a message, not an error status."""
+
+    return await asyncio.to_thread(discover_lsl, 1.2)
+
+
+@router.get("/playback/files", tags=["config"], summary="CSV files the playback picker can offer")
+def list_playback_files(hub: Hub = Depends(get_hub)) -> dict:
+    examples = Path("examples")
+    return {"files": playback_files(hub.settings.data_dir, examples if examples.is_dir() else None)}
 
 
 @router.get("/config", tags=["config"], summary="Runtime input configuration")

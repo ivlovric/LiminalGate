@@ -29,12 +29,27 @@ from liminalgate.signals import Event, Sample
 logger = logging.getLogger("liminalgate.osc")
 
 _MARKER = re.compile(r"^/Marker/(\d+)$")
+_HEART = re.compile(r"(?:^|/)(heart_rate|heart|hr|bpm)$", re.IGNORECASE)
 _ABSOLUTE = {
     "/muse/elements/delta_absolute": "delta",
     "/muse/elements/theta_absolute": "theta",
     "/muse/elements/alpha_absolute": "alpha",
     "/muse/elements/beta_absolute": "beta",
     "/muse/elements/gamma_absolute": "gamma",
+}
+_KNOWN_EXACT = {
+    "/muse/eeg",
+    "/muse/acc",
+    "/muse/gyro",
+    "/muse/ppg",
+    "/muse/optics",
+    "/muse/batt",
+    "/muse/elements/horseshoe",
+    "/muse/elements/is_good",
+    "/muse/elements/blink",
+    "/muse/elements/jaw_clench",
+    "/muse/elements/touching_forehead",
+    *_ABSOLUTE,
 }
 
 
@@ -122,6 +137,34 @@ def split_eeg(values: tuple[float, ...], width: int | None = None) -> list[tuple
     return [values[:8]]
 
 
+def ppg_channel_names(count: int) -> tuple[str, ...]:
+    """Ambient, IR, red, then any extra Athena PPG channels."""
+
+    base = ("ambient", "ir", "red")
+    if count <= len(base):
+        return base[:count]
+    extra = tuple(f"ch{index}" for index in range(len(base) + 1, count + 1))
+    return base + extra
+
+
+def known_osc_address(address: str) -> bool:
+    cleaned = address.strip()
+    if cleaned in _KNOWN_EXACT or _MARKER.match(cleaned):
+        return True
+    return _HEART.search(cleaned) is not None
+
+
+def device_heart_rate(address: str, values: tuple[float, ...]) -> float | None:
+    """BPM from a Mind Monitor heart-rate path, if this message is one."""
+
+    if not values or not _HEART.search(address.strip()):
+        return None
+    bpm = float(values[0])
+    if 30.0 <= bpm <= 220.0:
+        return bpm
+    return None
+
+
 def channel_names(width: int) -> tuple[str, ...]:
     extra = max(0, width - len(EEG_CHANNELS))
     return EEG_CHANNELS + AUX_CHANNELS[:extra]
@@ -166,8 +209,12 @@ def parse_message(
         return [Sample(stamp, "acc", ("x", "y", "z"), values[:3], 52.0)]
     if address == "/muse/gyro" and len(values) >= 3:
         return [Sample(stamp, "gyro", ("x", "y", "z"), values[:3], 52.0)]
-    if address == "/muse/ppg" and len(values) >= 3:
-        return [Sample(stamp, "ppg", ("ambient", "ir", "red"), values[:3], 64.0)]
+    if address == "/muse/ppg" and values:
+        names = ppg_channel_names(len(values))
+        return [Sample(stamp, "ppg", names, values[: len(names)], 64.0)]
+    heart = device_heart_rate(address, values)
+    if heart is not None:
+        return [Sample(stamp, "device_hr", ("bpm",), (heart,), 1.0)]
     if address == "/muse/optics" and values:
         names = tuple(f"opt{i + 1}" for i in range(len(values)))
         return [Sample(stamp, "optics", names, values, 64.0)]
@@ -207,6 +254,8 @@ class OscMindMonitorInput:
         self.fs = float(fs)
         self.scale = float(scale)
         self.clock = SampleClock(self.fs)
+        self.path_counts: dict[str, int] = {}
+        self._path_lock = threading.Lock()
         self.bound_port = int(port)
         self._server: ThreadingOSCUDPServer | None = None
         self._thread: threading.Thread | None = None
@@ -250,12 +299,23 @@ class OscMindMonitorInput:
         self._ready.set()
         self._server.serve_forever()
 
+    def path_snapshot(self) -> list[dict[str, int | str]]:
+        with self._path_lock:
+            rows = sorted(self.path_counts.items(), key=lambda item: (-item[1], item[0]))
+        return [{"path": path, "count": count} for path, count in rows[:40]]
+
     def _on_message(self, address: str, *args: object) -> None:
         emit = self._emit
         if emit is None:
             return
+        cleaned = address.strip()
+        with self._path_lock:
+            count = self.path_counts.get(cleaned, 0) + 1
+            self.path_counts[cleaned] = count
+        if count == 1 and not known_osc_address(cleaned):
+            logger.debug("unknown OSC path %s", cleaned)
         try:
-            for item in parse_message(address, args, fs=self.fs, scale=self.scale, clock=self.clock):
+            for item in parse_message(cleaned, args, fs=self.fs, scale=self.scale, clock=self.clock):
                 emit(item)
         except Exception:
-            logger.exception("osc_handler_failed", extra={"address": address})
+            logger.exception("osc_handler_failed", extra={"address": cleaned})

@@ -51,6 +51,30 @@ def test_heart_rate_from_synthetic_pulse():
     assert 55 <= bpm <= 65
 
 
+def test_multichannel_ppg_picks_the_pulsatile_channel():
+    fs = 64.0
+    t = np.arange(0, 12.0, 1.0 / fs)
+    pulse = render_ppg(t, bpm=72.0)
+    rng = np.random.default_rng(0)
+    extra = 0.4 + 0.05 * rng.normal(size=pulse.shape[0])
+    estimator = HeartRateEstimator(fs=fs)
+    assert estimator.status()["state"] == "no_ppg"
+    for row, noise in zip(pulse, extra, strict=True):
+        estimator.push_frame(("ambient", "ir", "red", "ch4"), (*row.tolist(), float(noise)))
+    snap = estimator.status(force=True)
+    assert snap["state"] == "ready"
+    assert snap["channel"] in {"ir", "red"}
+    assert snap["bpm"] is not None
+    assert 66 <= snap["bpm"] <= 78
+    short = HeartRateEstimator(fs=fs)
+    short.push_frame(("ir",), (0.4,))
+    assert short.status(force=True)["state"] == "computing"
+    estimator.set_device_bpm(88.0, 1.0)
+    override = estimator.status(force=True)
+    assert override["source"] == "device"
+    assert override["bpm"] == 88.0
+
+
 def _frame(theta: float, alpha: float) -> dict:
     return {
         "channels": ["TP9"],
