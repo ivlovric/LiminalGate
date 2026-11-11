@@ -90,6 +90,16 @@ class Hub:
         self._decim = 4
         self._eeg_channels: tuple[str, ...] = ()
         self._hr_value: float | None = None
+        self._heart: dict = {
+            "state": "no_ppg",
+            "bpm": None,
+            "rmssd": None,
+            "quality": None,
+            "channel": None,
+            "source": None,
+        }
+        self.temperature: float | None = None
+        self._hr_logged_at = 0.0
         self.battery: float | None = None
         self.touching: float | None = None
         self.last_feedback: dict | None = None
@@ -358,8 +368,18 @@ class Hub:
             if item.values:
                 if item.rate and abs(item.rate - self.hr.fs) > 1:
                     self.hr.reset(item.rate)
-                channel = item.values[1] if len(item.values) > 1 else item.values[0]
-                self.hr.push(channel)
+                self.hr.push_frame(item.channels, item.values, kind="ppg")
+            self._record(item)
+            self._refresh_hr(item.t)
+            return
+        if item.stream == "device_hr" and item.values:
+            self.hr.set_device_bpm(item.values[0], item.t)
+            self._refresh_hr(item.t)
+            return
+        if item.stream == "optics":
+            if item.values and not self.hr.saw_ppg:
+                self.hr.push_frame(item.channels, item.values, kind="optics")
+                self._refresh_hr(item.t)
             self._record(item)
             return
         if item.stream == "quality":
@@ -371,6 +391,11 @@ class Hub:
         if item.stream == "battery" and item.values:
             level = item.values[0]
             self.battery = level / 100.0 if level > 1.5 else level
+            # /muse/batt's fourth value is temperature in °C. Mind Monitor does not
+            # send a separate skin-temperature path.
+            if len(item.values) >= 4 and -40.0 <= item.values[3] <= 125.0:
+                self.temperature = float(item.values[3])
+            self._record(item)
             return
         if item.stream == "contact" and item.values:
             self.touching = item.values[0]
@@ -459,6 +484,7 @@ class Hub:
             },
             "quality": self.pipeline.quality,
             "hr": None if self._hr_value is None else round(self._hr_value, 1),
+            "heart": self._heart_public(),
             "battery": self.battery,
             "touching": self.touching,
             "recording": self._recording_brief(),
@@ -473,12 +499,48 @@ class Hub:
         self.last_feedback = feedback
         if self.tone.enabled:
             self.tone.update(float(feedback["volume"]), float(feedback["frequency"]))
-        return {"type": "features", "hr": self._hr_value, "feedback": feedback, **frame}
+        return {"type": "features", "hr": self._hr_value, "heart": self._heart_public(), "feedback": feedback, **frame}
 
-    def _refresh_hr(self) -> None:
-        estimate = self.hr.estimate()
-        if estimate is not None:
-            self._hr_value = estimate
+    def _refresh_hr(self, t: float | None = None) -> None:
+        snap = self.hr.status()
+        self._heart = snap
+        bpm = snap.get("bpm")
+        self._hr_value = None if bpm is None else float(bpm)
+        self._record_hr(t if t is not None else time.time(), snap)
+
+    def _heart_public(self) -> dict:
+        payload = dict(self._heart)
+        payload["temperature"] = self.temperature
+        return payload
+
+    def _record_hr(self, t: float, snap: dict) -> None:
+        bpm = snap.get("bpm")
+        if bpm is None or self.recorder is None or not self.recorder.active:
+            return
+        if t - self._hr_logged_at < 1.0:
+            return
+        self._hr_logged_at = t
+        rmssd = snap.get("rmssd")
+        self.recorder.add_sample(
+            Sample(
+                t,
+                "hr",
+                ("bpm", "rmssd"),
+                (float(bpm), float("nan") if rmssd is None else float(rmssd)),
+                1.0,
+            )
+        )
+
+    def _osc_paths(self) -> list[dict[str, int | str]]:
+        plugin = self.input
+        snapshot = getattr(plugin, "path_snapshot", None)
+        if not callable(snapshot):
+            return []
+        try:
+            rows = snapshot()
+        except Exception:
+            return []
+        return rows if isinstance(rows, list) else []
 
     def _recording_brief(self) -> dict | None:
         recorder = self.recorder
@@ -527,6 +589,8 @@ class Hub:
             "server_audio": self.tone.enabled,
             "feedback": self.last_feedback,
             "hr": self._hr_value,
+            "heart": self._heart_public(),
+            "osc_paths": self._osc_paths(),
         }
 
     def _sync_audio(self) -> None:

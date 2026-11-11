@@ -1,3 +1,4 @@
 # Imported only when the matching input is selected.
 brainflow==5.22.2
+bleak==0.22.3
 pylsl==1.18.6

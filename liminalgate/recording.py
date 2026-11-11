@@ -83,7 +83,7 @@ class SessionRecorder:
             self.t0 = sample.t
         if sample.stream == "eeg":
             self._add_eeg(sample)
-        elif sample.stream in {"acc", "gyro", "ppg", "optics"}:
+        elif sample.stream in {"acc", "gyro", "ppg", "optics", "battery", "hr"}:
             self._add_table(sample)
 
     def add_event(self, event: Event) -> None:
@@ -157,7 +157,7 @@ class SessionRecorder:
     def _add_table(self, sample: Sample) -> None:
         stream = sample.stream
         if stream not in self._writers:
-            folder = self.physio_dir if stream in {"ppg", "optics"} else self.motion_dir
+            folder = self.physio_dir if stream in {"ppg", "optics", "battery", "hr"} else self.motion_dir
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"{self.prefix}_{stream}.csv"
             handle = path.open("w", newline="", encoding="utf-8")

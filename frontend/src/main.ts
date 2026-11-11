@@ -1,6 +1,8 @@
 import "uplot/dist/uPlot.min.css";
 
 import { TonePlayer } from "./audio";
+import { CARDS, ema, loadView, smoothSeries, type CardId, type ViewState } from "./pace";
+import { BOARDS, INPUTS, validateSetup } from "./setup";
 import { RollingPlot, type TimedPoint } from "./plots";
 import "./style.css";
 
@@ -68,6 +70,17 @@ interface Status {
   profile: string;
   server_audio: boolean;
   hr: number | null;
+  heart?: Heart | null;
+  osc_paths?: { path: string; count: number }[];
+}
+interface Heart {
+  state: "no_ppg" | "computing" | "ready";
+  bpm: number | null;
+  rmssd: number | null;
+  quality: string | null;
+  channel: string | null;
+  source: string | null;
+  temperature?: number | null;
 }
 interface BandPower {
   relative_mean: number;
@@ -88,6 +101,7 @@ interface Config {
   brainflow_board: string;
   brainflow_mac: string;
   brainflow_serial: string;
+  brainflow_other_info: string;
   lsl_name: string;
   server_audio: boolean;
   powerline_hz: number;
@@ -134,10 +148,12 @@ const TIMELINE = ["delta", "theta", "alpha", "beta", "gamma"] as const;
 const TIMELINE_COLORS = ["#8b7cf6", "#7aa2ff", "#5dcaa5", "#e0b15a", "#e07a8a"];
 const LANE = { filtered: 140, raw: 2000 };
 
+const VIEW_KEY = "liminalgate.view";
 const tone = new TonePlayer();
-const eegPlot = new RollingPlot($("eeg-plot"), 5);
-const specPlot = new RollingPlot($("spec-plot"), 60);
-const timelinePlot = new RollingPlot($("timeline-plot"), 120, TIMELINE_COLORS);
+const eegPlot = new RollingPlot($("eeg-plot"), 10, undefined, { maxFps: 12, glide: true, retainSec: 35 });
+const specPlot = new RollingPlot($("spec-plot"), 60, undefined, { maxFps: 2, glide: false });
+const timelinePlot = new RollingPlot($("timeline-plot"), 300, TIMELINE_COLORS, { maxFps: 2, glide: true, retainSec: 30 * 60 });
+const hrPlot = new RollingPlot($("hr-plot"), 300, ["#e07a8a"], { maxFps: 2, glide: true, retainSec: 30 * 60 });
 
 let token = localStorage.getItem("liminalgate.token") ?? "";
 let profile: Profile | null = null;
@@ -151,16 +167,31 @@ let recordAnchor: { elapsed: number; at: number } | null = null;
 let lastVolume = 0;
 let lastHz = 220;
 let drawerMode: "profile" | "setup" | null = null;
-let traceMode: "filtered" | "raw" = "filtered";
-let traceWindow = 5;
-let timelineMinutes = 2;
+let view: ViewState = loadView(localStorage.getItem(VIEW_KEY));
+let traceMode: "filtered" | "raw" = view.traceMode;
+let traceWindow = view.traceWindow;
+let timelineMinutes = view.minutes;
 let excluded = new Set<string>();
 let lastQuality: number[] | null = null;
 let eegChannels: string[] = ["TP9", "AF7", "AF8", "TP10"];
+let traceKey = "";
+let lastTraceT = Number.NEGATIVE_INFINITY;
+let timelineKey = "";
+let lastTimelineT = 0;
+let emaStamp = 0;
+let specStamp = 0;
+let specSmooth: number[] | null = null;
+let recordingId: string | null = null;
+let slowTimer = 0;
+let pendingBands: Record<string, BandPower> | null = null;
+let pendingRatios: Record<string, { expression: string; mean: number | null }> | null = null;
 const traceHistory: { t: number; raw: number[]; filtered: number[]; gap: boolean }[] = [];
 const timelineHistory: { t: number; values: Record<string, number | null>; device: Record<string, number | null> }[] = [];
 const timelineEma: Record<string, number> = {};
 const timelineDevice: Record<string, number | null> = {};
+const AUTO_KEY = "liminalgate.autoEvents";
+let showAuto = localStorage.getItem(AUTO_KEY) === "1";
+let lastHrT = 0;
 
 function esc(value: string): string {
   return value.replace(/[&<>"']/g, (ch) =>
@@ -201,18 +232,24 @@ function setConnection(label: string, kind: "live" | "bad" | "wait"): void {
 }
 
 function applyRecording(rec: Recording | null): void {
-  recordBtn.textContent = rec ? "Stop" : "Record";
-  recordBtn.classList.toggle("recording", Boolean(rec));
-  recordBtn.dataset.recording = rec ? "yes" : "no";
-  if (rec) {
-    recordAnchor = { elapsed: rec.elapsed, at: performance.now() };
-    savePath.textContent = rec.path;
-    clockLabel.textContent = "recording";
-  } else if (recordAnchor) {
+  if (!rec) {
+    if (!recordingId && recordBtn.dataset.recording !== "yes") return;
+    recordingId = null;
     recordAnchor = null;
+    recordBtn.textContent = "Record";
+    recordBtn.classList.remove("recording");
+    recordBtn.dataset.recording = "no";
     clock.textContent = "idle";
     clockLabel.textContent = "session";
+    return;
   }
+  savePath.textContent = rec.path;
+  clockLabel.textContent = "recording";
+  recordBtn.classList.add("recording");
+  recordBtn.dataset.recording = "yes";
+  if (recordingId === rec.session_id && recordAnchor) return;
+  recordingId = rec.session_id;
+  recordAnchor = { elapsed: rec.elapsed, at: performance.now() };
 }
 
 function setFeedback(volume: number, frequency: number): void {
@@ -242,7 +279,7 @@ function renderHorseshoe(channels: string[], quality: number[] | null): void {
     horseshoe.innerHTML = "";
     return;
   }
-  horseshoe.innerHTML = Array.from({ length: count }, (_, index) => {
+  const html = Array.from({ length: count }, (_, index) => {
     const name = names[index] ?? channels[index] ?? `${index + 1}`;
     const value = quality?.[index];
     const bad = excluded.has(name) || (value != null && value >= 4);
@@ -250,60 +287,137 @@ function renderHorseshoe(channels: string[], quality: number[] | null): void {
     const title = excluded.has(name) ? "excluded from averages" : "";
     return `<span title="${esc(title)}"><i class="${klass}"></i>${esc(name)}</span>`;
   }).join("");
+  if (html === horseshoe.dataset.markup) return;
+  horseshoe.dataset.markup = html;
+  horseshoe.innerHTML = html;
 }
 
-function redrawTraces(): void {
+function tracePoint(point: (typeof traceHistory)[number], previous: number | null): TimedPoint[] {
+  const lane = LANE[traceMode];
+  const rows: TimedPoint[] = [];
+  if (point.gap && previous != null) {
+    rows.push({ t: previous + (point.t - previous) * 0.5, values: eegChannels.map(() => null) });
+  }
+  const source = traceMode === "raw" ? point.raw : point.filtered;
+  rows.push({
+    t: point.t,
+    values: eegChannels.map((_, index) => {
+      const value = source[index];
+      return typeof value === "number" ? value + index * lane : null;
+    }),
+  });
+  return rows;
+}
+
+function syncTraces(full: boolean): void {
   const title = document.getElementById("eeg-title");
   if (title) title.textContent = traceMode === "filtered" ? "EEG" : "EEG raw";
-  if (!traceHistory.length) {
-    eegPlot.reset();
+  const key = `${eegChannels.join("|")}:${traceMode}`;
+  if (!traceHistory.length) return;
+  if (full || key !== traceKey) {
+    traceKey = key;
+    const rows: TimedPoint[] = [];
+    let previous: number | null = null;
+    for (const point of traceHistory) {
+      rows.push(...tracePoint(point, previous));
+      previous = point.t;
+    }
+    lastTraceT = traceHistory[traceHistory.length - 1].t;
+    eegPlot.replace(eegChannels, rows);
     return;
   }
-  const last = traceHistory[traceHistory.length - 1].t;
-  const min = last - traceWindow;
-  const lane = LANE[traceMode];
-  const channels = eegChannels;
-  const points: TimedPoint[] = [];
+  const fresh: TimedPoint[] = [];
   let previous: number | null = null;
   for (const point of traceHistory) {
-    if (point.t < min) continue;
-    if (point.gap && previous != null) {
-      points.push({ t: previous + (point.t - previous) * 0.5, values: channels.map(() => null) });
-    }
-    const source = traceMode === "raw" ? point.raw : point.filtered;
-    points.push({
-      t: point.t,
-      values: channels.map((_, index) => {
-        const value = source[index];
-        return typeof value === "number" ? value + index * lane : null;
-      }),
-    });
+    if (point.t > lastTraceT) fresh.push(...tracePoint(point, previous));
     previous = point.t;
   }
-  eegPlot.reset();
-  eegPlot.pushTimed(channels, points);
+  if (!fresh.length) return;
+  lastTraceT = traceHistory[traceHistory.length - 1].t;
+  eegPlot.pushTimed(eegChannels, fresh);
 }
 
-function redrawTimeline(): void {
+function timelineNames(): { names: string[]; dashes: boolean[] } {
   const names: string[] = [...TIMELINE];
   const dashes = names.map(() => false);
   const deviceNames = TIMELINE.filter((name) => timelineDevice[name] != null).map((name) => `${name} device`);
   names.push(...deviceNames);
   dashes.push(...deviceNames.map(() => true));
-  const last = timelineHistory[timelineHistory.length - 1]?.t;
-  if (last == null) return;
-  const min = last - timelineMinutes * 60;
-  const points: TimedPoint[] = timelineHistory
-    .filter((row) => row.t >= min)
-    .map((row) => ({
-      t: row.t,
-      values: [
-        ...TIMELINE.map((name) => row.values[name] ?? null),
-        ...deviceNames.map((label) => row.device[label.replace(" device", "")] ?? null),
-      ],
-    }));
-  timelinePlot.reset();
-  timelinePlot.pushTimed(names, points, dashes);
+  return { names, dashes };
+}
+
+function timelineValues(row: (typeof timelineHistory)[number], names: string[]): (number | null)[] {
+  return names.map((name) => {
+    if (name.endsWith(" device")) return row.device[name.replace(" device", "")] ?? null;
+    return row.values[name] ?? null;
+  });
+}
+
+function syncTimeline(full: boolean): void {
+  if (!timelineHistory.length) return;
+  const { names, dashes } = timelineNames();
+  const key = names.join("|");
+  if (full || key !== timelineKey) {
+    timelineKey = key;
+    const min = timelineHistory[timelineHistory.length - 1].t - 30 * 60;
+    timelinePlot.replace(
+      names,
+      timelineHistory.filter((row) => row.t >= min).map((row) => ({ t: row.t, values: timelineValues(row, names) })),
+      dashes,
+    );
+    return;
+  }
+  const row = timelineHistory[timelineHistory.length - 1];
+  timelinePlot.pushTimed(names, [{ t: row.t, values: timelineValues(row, names) }], dashes);
+}
+
+function cardShown(id: CardId): boolean {
+  const panel = document.querySelector(`[data-card="${id}"]`);
+  return Boolean(panel && !panel.hasAttribute("hidden") && !panel.classList.contains("collapsed"));
+}
+
+function saveView(): void {
+  view.traceMode = traceMode;
+  view.traceWindow = traceWindow;
+  view.minutes = timelineMinutes;
+  localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+}
+
+function applyView(): void {
+  document.body.classList.toggle("calm", view.calm);
+  const calmBtn = document.getElementById("calm-btn");
+  if (calmBtn) {
+    calmBtn.textContent = view.calm ? "Exit calm" : "Calm";
+    calmBtn.classList.toggle("on", view.calm);
+  }
+  for (const id of CARDS) {
+    const panel = document.querySelector(`[data-card="${id}"]`);
+    if (!(panel instanceof HTMLElement)) continue;
+    const hidden = view.calm ? id !== "timeline" : view.hidden.includes(id);
+    const collapsed = view.calm ? false : view.collapsed.includes(id);
+    panel.hidden = hidden;
+    panel.classList.toggle("collapsed", collapsed);
+    panel.querySelector("[data-collapse]")?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    const box = document.querySelector(`[data-show="${id}"]`);
+    if (box instanceof HTMLInputElement) box.checked = !view.hidden.includes(id);
+  }
+  eegPlot.setPaused(!cardShown("eeg"));
+  specPlot.setPaused(!cardShown("spectrum"));
+  timelinePlot.setPaused(!cardShown("timeline"));
+  hrPlot.setPaused(!cardShown("heart"));
+  eegPlot.setWindow(traceWindow);
+  timelinePlot.setWindow(timelineMinutes * 60);
+  hrPlot.setWindow(timelineMinutes * 60);
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#minute-toggle button")) {
+    button.classList.toggle("on", Number(button.dataset.minutes) === timelineMinutes);
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#trace-window button")) {
+    button.classList.toggle("on", Number(button.dataset.window) === traceWindow);
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#trace-mode button")) {
+    button.classList.toggle("on", button.dataset.mode === traceMode);
+  }
+  saveView();
 }
 
 function renderBands(bands: Record<string, BandPower>): void {
@@ -363,11 +477,60 @@ function renderMarkers(): void {
   paintTrack();
 }
 
+function heartLabel(heart: Heart | null | undefined): string {
+  if (!heart || heart.state === "no_ppg") return "no PPG data";
+  if (heart.state !== "ready" || heart.bpm == null || !Number.isFinite(heart.bpm)) return "computing";
+  return heart.bpm.toFixed(0);
+}
+
+function showHeart(heart: Heart | null | undefined, t?: number): void {
+  const label = heartLabel(heart);
+  const ready = Boolean(heart && heart.state === "ready" && heart.bpm != null);
+  hrEl.textContent = label;
+  hrEl.closest(".hr-readout")?.classList.toggle("ready", ready);
+  const headerUnit = document.getElementById("hr-header-unit");
+  if (headerUnit) headerUnit.hidden = !ready;
+  const value = document.getElementById("hr-value");
+  if (value) value.textContent = label;
+  const unit = document.getElementById("hr-unit");
+  if (unit) unit.hidden = !ready;
+  const detail = document.getElementById("hr-detail");
+  if (detail) detail.textContent = ready ? `${label} bpm` : label;
+  const meta = document.getElementById("hr-meta");
+  if (meta) {
+    if (!heart || heart.state === "no_ppg") meta.textContent = "Waiting for /muse/ppg or a headset heart-rate path.";
+    else if (!ready) meta.textContent = "PPG is arriving. Looking for a steady pulse.";
+    else {
+      const bits = [heart.source === "device" ? "headset" : heart.channel ? `channel ${heart.channel}` : "PPG"];
+      if (heart.quality) bits.push(heart.quality);
+      if (heart.rmssd != null && Number.isFinite(heart.rmssd)) bits.push(`RMSSD ${heart.rmssd.toFixed(0)} ms`);
+      meta.textContent = bits.join(" · ");
+    }
+  }
+  const temp = document.getElementById("hr-temp");
+  const celsius = heart?.temperature;
+  if (temp) {
+    if (typeof celsius === "number" && Number.isFinite(celsius)) {
+      temp.hidden = false;
+      temp.textContent = `${celsius.toFixed(0)} °C`;
+    } else {
+      temp.hidden = true;
+      temp.textContent = "";
+    }
+  }
+  if (!ready || heart?.bpm == null) return;
+  const stamp = typeof t === "number" && Number.isFinite(t) ? t : Date.now() / 1000;
+  if (stamp - lastHrT < 1) return;
+  lastHrT = stamp;
+  hrPlot.pushTimed(["bpm"], [{ t: stamp, values: [heart.bpm] }]);
+}
+
 function paintTrack(): void {
   const now = Date.now() / 1000;
   const span = 20;
   markerTrack.innerHTML = events
     .filter((event) => now - event.t < span)
+    .filter((event) => showAuto || (event.kind !== "blink" && event.kind !== "jaw_clench"))
     .map((event) => {
       const left = ((event.t - (now - span)) / span) * 100;
       return `<i title="${esc(event.kind)} ${esc(event.name)}" style="left:${left}%;background:${esc(event.color)}"></i>`;
@@ -389,7 +552,14 @@ function applyStatus(status: Status): void {
   if (socket?.readyState === WebSocket.OPEN) {
     setConnection(input.error ? "input error" : input.running ? "live" : "stopped", input.error || !input.running ? "bad" : "live");
   }
-  if (status.hr != null) hrEl.textContent = status.hr.toFixed(0);
+  showHeart(status.heart ?? (status.hr != null ? { state: "ready", bpm: status.hr, rmssd: null, quality: null, channel: null, source: null } : null));
+  const paths = document.getElementById("cfg-paths");
+  if (paths && drawerMode === "setup") {
+    const rows = status.osc_paths ?? [];
+    paths.innerHTML = rows.length
+      ? rows.map((row) => `<li>${esc(row.path)} <span>${row.count.toLocaleString()}</span></li>`).join("")
+      : "<li>No OSC paths yet.</li>";
+  }
   applyRecording(status.recording);
   profileName.textContent = status.profile;
 }
@@ -420,33 +590,40 @@ function onMessage(raw: string): void {
     }
     const newest = traceHistory[traceHistory.length - 1]?.t;
     if (newest != null) {
-      const min = newest - 10;
-      while (traceHistory.length && traceHistory[0].t < min) traceHistory.shift();
+      const min = newest - 35;
+      while (traceHistory.length > 2 && traceHistory[0].t < min) traceHistory.shift();
     }
-    redrawTraces();
+    syncTraces(false);
     if (Array.isArray(message.quality)) lastQuality = message.quality as number[];
     renderHorseshoe(eegChannels, lastQuality);
-    if (typeof message.hr === "number") hrEl.textContent = message.hr.toFixed(0);
+    showHeart(message.heart as Heart | undefined, typeof message.t === "number" ? message.t : undefined);
     applyRecording((message.recording as Recording | null) ?? null);
     return;
   }
   if (message.type === "features") {
-    renderBands((message.bands as Record<string, BandPower>) ?? {});
-    renderRatios((message.ratios as Record<string, { expression: string; mean: number | null }>) ?? {});
+    pendingBands = (message.bands as Record<string, BandPower>) ?? {};
+    pendingRatios = (message.ratios as Record<string, { expression: string; mean: number | null }>) ?? {};
     const spectrum = message.spectrum as { freqs: number[]; psd_log10: number[] };
-    if (spectrum?.freqs?.length) specPlot.setSeries(spectrum.freqs, spectrum.psd_log10);
+    const stamp = typeof message.t === "number" ? message.t : 0;
+    if (spectrum?.freqs?.length && cardShown("spectrum")) {
+      const dt = specStamp ? Math.min(2, stamp - specStamp) : 0.5;
+      specStamp = stamp;
+      specSmooth = smoothSeries(specSmooth, spectrum.psd_log10, dt, view.smoothSec * 2);
+      specPlot.setSeries(spectrum.freqs, specSmooth);
+    }
     const timeline = message.timeline as
       | Record<string, { log10: number | null; device: number | null }>
       | undefined;
-    if (timeline && typeof message.t === "number") {
+    if (timeline && stamp) {
+      const dt = emaStamp ? Math.min(2, stamp - emaStamp) : 0;
+      emaStamp = stamp;
       const smoothed: Record<string, number | null> = {};
       const device: Record<string, number | null> = {};
       for (const name of TIMELINE) {
         const sample = timeline[name];
         const value = sample?.log10;
         if (typeof value === "number" && Number.isFinite(value)) {
-          const previous = timelineEma[name];
-          timelineEma[name] = previous == null ? value : 0.25 * value + 0.75 * previous;
+          timelineEma[name] = ema(timelineEma[name], value, dt, view.smoothSec);
           smoothed[name] = timelineEma[name];
         } else {
           smoothed[name] = timelineEma[name] ?? null;
@@ -454,10 +631,20 @@ function onMessage(raw: string): void {
         device[name] = typeof sample?.device === "number" ? sample.device : null;
         if (device[name] != null) timelineDevice[name] = device[name];
       }
-      timelineHistory.push({ t: message.t as number, values: smoothed, device });
-      const min = (message.t as number) - 5 * 60;
-      while (timelineHistory.length && timelineHistory[0].t < min) timelineHistory.shift();
-      redrawTimeline();
+      if (stamp - lastTimelineT >= 0.5) {
+        lastTimelineT = stamp;
+        timelineHistory.push({ t: stamp, values: smoothed, device });
+        const min = stamp - 30 * 60;
+        while (timelineHistory.length > 2 && timelineHistory[0].t < min) timelineHistory.shift();
+        syncTimeline(false);
+      }
+    }
+    if (!slowTimer) {
+      slowTimer = window.setTimeout(() => {
+        slowTimer = 0;
+        if (pendingBands && cardShown("bands")) renderBands(pendingBands);
+        if (pendingRatios && cardShown("ratios")) renderRatios(pendingRatios);
+      }, 500);
     }
     const dropped = message.excluded as string[] | undefined;
     if (dropped) {
@@ -466,7 +653,7 @@ function onMessage(raw: string): void {
     }
     const feedback = message.feedback as { volume: number; frequency: number };
     setFeedback(feedback.volume, feedback.frequency);
-    if (typeof message.hr === "number") hrEl.textContent = message.hr.toFixed(0);
+    showHeart(message.heart as Heart | undefined, typeof message.t === "number" ? message.t : undefined);
     const quality = message.quality as number[] | null;
     const channels = (message.channels as string[]) ?? [];
     if (quality) renderHorseshoe(channels, quality);
@@ -506,17 +693,41 @@ function sendMarker(name: string): void {
   void api("/api/markers", { method: "POST", body: JSON.stringify({ name }) }).catch((error: Error) => showToast(error.message));
 }
 
+let setupPoll = 0;
+
 function openDrawer(mode: "profile" | "setup"): void {
   drawerMode = mode;
   drawer.hidden = false;
   drawerTitle.textContent = mode === "profile" ? "Profile" : "Setup";
   if (mode === "profile") renderProfileForm();
-  else renderSetupForm();
+  else {
+    renderSetupForm();
+    void refreshSetupLive();
+    if (setupPoll) window.clearInterval(setupPoll);
+    setupPoll = window.setInterval(() => void refreshSetupLive(), 1000);
+  }
 }
 
 function closeDrawer(): void {
   drawer.hidden = true;
   drawerMode = null;
+  if (setupPoll) window.clearInterval(setupPoll);
+  setupPoll = 0;
+}
+
+async function refreshSetupLive(): Promise<void> {
+  if (drawerMode !== "setup") return;
+  try {
+    const status = await api<Status>("/api/status");
+    const input = status.input;
+    const state = input.error ? input.error : input.running ? "live" : "stopped";
+    const active = document.getElementById("cfg-active");
+    if (active) active.textContent = `Active now: ${input.type} · ${input.eeg_fs.toFixed(0)} Hz · ${state}`;
+    const packets = document.getElementById("cfg-packets");
+    if (packets) packets.textContent = `Packets received: ${input.samples_seen.toLocaleString()}`;
+  } catch {
+    /* the form stays usable if a poll fails */
+  }
 }
 
 function field(label: string, html: string): string {
@@ -697,28 +908,352 @@ function readProfile(): Profile {
   };
 }
 
+function choiceButtons(selected: string): string {
+  return INPUTS.map(
+    (item) =>
+      `<button type="button" class="choice${item.id === selected ? " on" : ""}" data-input="${item.id}" aria-pressed="${item.id === selected}">
+        <strong>${esc(item.title)}</strong><small>${esc(item.blurb)}</small>
+      </button>`,
+  ).join("");
+}
+
 function renderSetupForm(): void {
   const cfg = config;
+  const selected = cfg?.input_type ?? "synthetic";
+  const power = cfg?.powerline_hz === 60 ? 60 : 50;
+  const board = cfg?.brainflow_board ?? "synthetic";
+  const boards = BOARDS.includes(board as (typeof BOARDS)[number]) ? [...BOARDS] : [board, ...BOARDS];
   drawerBody.innerHTML = `
-    <p class="hint">The gateway listens for Mind Monitor OSC on the host and port below. Point OSC Stream Target at this computer. Scale multiplies raw EEG before analysis (BrainFlow and muse-lsl can differ by about 4.5× on Athena).</p>
+    <p id="cfg-active" class="active-line">Active now: ${esc(selected)}</p>
+    <div id="cfg-inputs" class="choices" data-selected="${esc(selected)}">${choiceButtons(selected)}</div>
+    <div class="stack for-input" data-for="osc" ${selected === "osc" ? "" : "hidden"}>
+      ${field("OSC port", `<input id="cfg-osc-port" type="number" min="1" max="65535" inputmode="numeric" value="${cfg?.osc_port ?? 5000}" />`)}
+      <p class="hint">Mind Monitor → OSC Stream Target IP = this computer, port = the published host port.</p>
+      <p id="cfg-packets" class="active-line">Packets received: —</p>
+      <p class="hint">OSC paths seen</p>
+      <ul id="cfg-paths" class="path-list"><li>No OSC paths yet.</li></ul>
+    </div>
+    <div class="stack for-input" data-for="brainflow" ${selected === "brainflow" ? "" : "hidden"}>
+      ${field("Board", `<select id="cfg-board">${boards.map((name) => `<option value="${esc(name)}"${name === board ? " selected" : ""}>${esc(name)}</option>`).join("")}</select>`)}
+      <button type="button" id="cfg-ble-scan">Scan for devices</button>
+      <p class="hint">Needs the host's Bluetooth. In Docker, run with compose.host.yaml.</p>
+      <p id="cfg-ble-note" class="hint"></p>
+      <div id="cfg-ble-list" class="device-list"></div>
+      ${field("MAC address", `<input id="cfg-mac" value="${esc(cfg?.brainflow_mac ?? "")}" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" />`)}
+      ${field("Serial", `<input id="cfg-serial" value="${esc(cfg?.brainflow_serial ?? "")}" autocomplete="off" />`)}
+    </div>
+    <div class="stack for-input" data-for="lsl" ${selected === "lsl" ? "" : "hidden"}>
+      ${field("Discovered streams", `<select id="cfg-lsl-list"><option value="">Any EEG stream</option></select>`)}
+      <button type="button" id="cfg-lsl-refresh">Find streams</button>
+      <p id="cfg-lsl-note" class="hint"></p>
+      ${field("Stream name", `<input id="cfg-lsl" value="${esc(cfg?.lsl_name ?? "")}" placeholder="blank uses the first EEG stream" />`)}
+    </div>
+    <div class="stack for-input" data-for="playback" ${selected === "playback" ? "" : "hidden"}>
+      ${field("File", `<select id="cfg-file"><option value="">Custom path…</option></select>`)}
+      ${field("Path", `<input id="cfg-playback" value="${esc(cfg?.playback_path ?? "")}" placeholder="/data/demo.csv" />`)}
+      ${field("Speed", `<input id="cfg-speed" type="number" min="0" step="0.1" value="${cfg?.playback_speed ?? 1}" />`)}
+      <p class="hint">0 plays as fast as possible. 1 follows the file's timestamps.</p>
+    </div>
+    <div class="stack for-input" data-for="synthetic" ${selected === "synthetic" ? "" : "hidden"}>
+      <p class="hint">Nothing else to set. Apply starts the built-in theta-dominant signal.</p>
+    </div>
+    <h3>Signal</h3>
     <div class="stack">
-      ${field("Input", `<select id="cfg-input">${opt(["synthetic", "osc", "playback", "brainflow", "lsl"], cfg?.input_type ?? "synthetic")}</select>`)}
-      ${field("OSC host", `<input id="cfg-osc-host" value="${esc(cfg?.osc_host ?? "0.0.0.0")}" />`)}
-      ${field("OSC port", `<input id="cfg-osc-port" type="number" value="${cfg?.osc_port ?? 5000}" />`)}
-      ${field("Playback file", `<input id="cfg-playback" value="${esc(cfg?.playback_path ?? "")}" placeholder="/data/demo.csv" />`)}
-      ${field("Playback speed (0 = as fast as possible)", `<input id="cfg-speed" type="number" step="0.1" value="${cfg?.playback_speed ?? 1}" />`)}
-      ${field("EEG scale", `<input id="cfg-scale" type="number" step="0.1" value="${cfg?.eeg_scale ?? 1}" />`)}
-      ${field("EEG sample rate", `<input id="cfg-fs" type="number" value="${cfg?.eeg_fs ?? 256}" />`)}
-      ${field("BrainFlow board", `<input id="cfg-board" value="${esc(cfg?.brainflow_board ?? "synthetic")}" placeholder="synthetic or muse_s_athena" />`)}
-      ${field("BrainFlow MAC", `<input id="cfg-mac" value="${esc(cfg?.brainflow_mac ?? "")}" />`)}
-      ${field("LSL stream name", `<input id="cfg-lsl" value="${esc(cfg?.lsl_name ?? "")}" />`)}
-      ${field("Powerline Hz (metadata only)", `<input id="cfg-power" type="number" value="${cfg?.powerline_hz ?? 50}" />`)}
-      ${field("Access token for this browser", `<input id="cfg-token" type="password" value="${esc(token)}" autocomplete="off" />`)}
-      <label><input id="cfg-audio" type="checkbox" ${cfg?.server_audio ? "checked" : ""}/> Host speaker (aplay)</label>
-      <button type="button" id="save-setup" class="primary">Apply</button>
-      <a href="/docs" target="_blank" rel="noreferrer">OpenAPI docs</a>
-    </div>`;
+      <div class="seg">
+        <button type="button" data-scale="1">1 · Mind Monitor</button>
+        <button type="button" data-scale="4.5">4.5</button>
+        <button type="button" data-scale="0.22">0.22</button>
+      </div>
+      ${field("EEG scale", `<input id="cfg-scale" type="number" min="0.0001" max="1000" step="0.01" value="${cfg?.eeg_scale ?? 1}" />`)}
+      <p class="hint">Mind Monitor OSC is already in µV, so leave this at 1. BrainFlow and muse-lsl can disagree by about 4.5× on Athena.</p>
+      <div class="seg" id="cfg-line">
+        <button type="button" data-line="50" class="${power === 50 ? "on" : ""}">50 Hz</button>
+        <button type="button" data-line="60" class="${power === 60 ? "on" : ""}">60 Hz</button>
+      </div>
+      <input id="cfg-power" type="hidden" value="${power}" />
+      <p class="hint">Powerline sets the display notch. Recorded EEG stays unfiltered.</p>
+    </div>
+    <h3>Display</h3>
+    <div class="stack">
+      ${field("Band chart", `<select id="cfg-minutes">${[1, 5, 15, 30].map((value) => `<option value="${value}"${value === timelineMinutes ? " selected" : ""}>${value} min</option>`).join("")}</select>`)}
+      ${field("EEG window", `<select id="cfg-trace">${[5, 10, 30].map((value) => `<option value="${value}"${value === traceWindow ? " selected" : ""}>${value} s</option>`).join("")}</select>`)}
+      ${field("Smoothing", `<select id="cfg-smooth">${[0.5, 1, 2].map((value) => `<option value="${value}"${value === view.smoothSec ? " selected" : ""}>${value} s</option>`).join("")}</select>`)}
+    </div>
+    <h3>Session</h3>
+    <div class="stack">
+      ${field("Profile", `<select id="cfg-profile"><option value="${esc(profile?.name ?? "")}">${esc(profile?.name ?? "…")}</option></select>`)}
+      ${field("Subject", `<input id="cfg-subject" value="${esc(subject.value)}" maxlength="32" />`)}
+      ${field("Task", `<input id="cfg-task" value="${esc(task.value)}" maxlength="32" />`)}
+      ${field("Notes", `<input id="cfg-notes" value="${esc(notes.value)}" maxlength="240" />`)}
+    </div>
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="stack">
+        ${field("OSC bind host", `<input id="cfg-osc-host" value="${esc(cfg?.osc_host ?? "0.0.0.0")}" />`)}
+        ${field("EEG sample rate", `<input id="cfg-fs" type="number" min="1" max="2048" value="${cfg?.eeg_fs ?? 256}" />`)}
+        ${field("Display rate (Hz)", `<input id="cfg-display" type="number" min="1" max="256" value="${cfg?.display_hz ?? 64}" />`)}
+        ${field("BrainFlow other info", `<input id="cfg-other" value="${esc(cfg?.brainflow_other_info ?? "")}" />`)}
+        <label><input id="cfg-loop" type="checkbox" ${cfg?.playback_loop !== false ? "checked" : ""}/> Loop playback</label>
+        <label><input id="cfg-audio" type="checkbox" ${cfg?.server_audio ? "checked" : ""}/> Host speaker (aplay)</label>
+        ${field("Access token for this browser", `<input id="cfg-token" type="password" value="${esc(token)}" autocomplete="off" />`)}
+        <a href="/docs" target="_blank" rel="noreferrer">OpenAPI docs</a>
+      </div>
+    </details>
+    <p id="cfg-feedback" class="form-note" role="status"></p>
+    <button type="button" id="save-setup" class="primary">Apply</button>`;
+  void fillSetupLists();
 }
+
+interface BrainflowBoard {
+  value: string;
+  enum: string;
+  board_id: number;
+  label: string;
+}
+interface BleDevice {
+  name: string;
+  mac: string;
+  rssi: number | null;
+  serial: string;
+  board: string;
+  board_id: number;
+  board_label: string;
+  note: string;
+}
+
+async function fillSetupLists(): Promise<void> {
+  const files = document.getElementById("cfg-file");
+  const currentPath = text(document.getElementById("cfg-playback"));
+  if (files instanceof HTMLSelectElement) {
+    try {
+      const body = await api<{ files: string[] }>("/api/playback/files");
+      const options = body.files.map((path) => `<option value="${esc(path)}">${esc(path)}</option>`).join("");
+      files.innerHTML = `<option value="">Custom path…</option>${options}`;
+      if (currentPath && body.files.includes(currentPath)) files.value = currentPath;
+    } catch {
+      /* the path field still works */
+    }
+  }
+  const boardPick = document.getElementById("cfg-board");
+  if (boardPick instanceof HTMLSelectElement) {
+    try {
+      const body = await api<{ boards: BrainflowBoard[] }>("/api/brainflow/boards");
+      const current = boardPick.value;
+      boardPick.innerHTML = body.boards
+        .map((row) => `<option value="${esc(row.value)}">${esc(row.label)}</option>`)
+        .join("");
+      ensureBoardOption(boardPick, current, current);
+      boardPick.value = current;
+    } catch {
+      /* the short Muse list still works */
+    }
+  }
+  const profilePick = document.getElementById("cfg-profile");
+  if (profilePick instanceof HTMLSelectElement) {
+    try {
+      const rows = await api<{ name: string }[]>("/api/profiles");
+      profilePick.innerHTML = rows.map((row) => `<option value="${esc(row.name)}">${esc(row.name)}</option>`).join("");
+      if (profile?.name) profilePick.value = profile.name;
+    } catch {
+      /* keep the current name */
+    }
+  }
+}
+
+function setupFeedback(message: string, kind: "ok" | "bad"): void {
+  const note = document.getElementById("cfg-feedback");
+  if (!note) return;
+  note.textContent = message;
+  note.className = kind === "ok" ? "form-note ok" : "form-note bad";
+}
+
+function selectInput(kind: string): void {
+  const wrap = document.getElementById("cfg-inputs");
+  if (wrap) wrap.dataset.selected = kind;
+  for (const button of drawerBody.querySelectorAll<HTMLButtonElement>("[data-input]")) {
+    const on = button.dataset.input === kind;
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  for (const block of drawerBody.querySelectorAll<HTMLElement>("[data-for]")) {
+    block.hidden = block.dataset.for !== kind;
+  }
+}
+
+function ensureBoardOption(select: HTMLSelectElement, value: string, label: string): void {
+  if (!value || [...select.options].some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label || value;
+  select.append(option);
+}
+
+async function scanBrainflowDevices(): Promise<void> {
+  const note = document.getElementById("cfg-ble-note");
+  const list = document.getElementById("cfg-ble-list");
+  const button = document.getElementById("cfg-ble-scan");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+  if (note) {
+    note.className = "hint";
+    note.textContent = "Scanning…";
+  }
+  try {
+    const body = await api<{ available: boolean; devices: BleDevice[]; error: string | null }>("/api/brainflow/devices");
+    if (note) {
+      note.className = body.error ? "form-note bad" : "hint";
+      note.textContent = body.error
+        ? body.error
+        : body.devices.length
+          ? `${body.devices.length} headset(s). Pick one to fill the board, MAC, and serial.`
+          : "No compatible headsets found.";
+    }
+    if (list) {
+      list.innerHTML = body.devices
+        .map((device) => {
+          const rssi = device.rssi == null ? "RSSI —" : `${device.rssi} dBm`;
+          return `<button type="button" data-ble="1" data-mac="${esc(device.mac)}" data-serial="${esc(device.serial)}" data-board="${esc(device.board)}" data-board-id="${device.board_id}" data-board-label="${esc(device.board_label)}" data-note="${esc(device.note)}">
+            <strong>${esc(device.name || device.mac || "Headset")}</strong>
+            <small>${esc(device.mac)} · ${esc(rssi)} · ${esc(device.board_label)} (${device.board_id})</small>
+          </button>`;
+        })
+        .join("");
+    }
+  } catch (error) {
+    if (note) {
+      note.className = "form-note bad";
+      note.textContent = error instanceof Error ? error.message : "Could not scan for devices.";
+    }
+  } finally {
+    if (button instanceof HTMLButtonElement) button.disabled = false;
+  }
+}
+
+function applyBleDevice(button: HTMLButtonElement): void {
+  const board = button.dataset.board ?? "";
+  const label = button.dataset.boardLabel ?? board;
+  const boardId = button.dataset.boardId ?? "";
+  const select = document.getElementById("cfg-board");
+  if (select instanceof HTMLSelectElement) {
+    ensureBoardOption(select, board, boardId ? `${label} (${boardId})` : label);
+    select.value = board;
+  }
+  const mac = document.getElementById("cfg-mac");
+  if (mac instanceof HTMLInputElement) mac.value = button.dataset.mac ?? "";
+  const serial = document.getElementById("cfg-serial");
+  if (serial instanceof HTMLInputElement) serial.value = button.dataset.serial ?? "";
+  const note = document.getElementById("cfg-ble-note");
+  if (note) {
+    note.className = "hint";
+    note.textContent = button.dataset.note || `Using ${label} (${boardId}).`;
+  }
+}
+
+async function findLslStreams(): Promise<void> {
+  const note = document.getElementById("cfg-lsl-note");
+  const list = document.getElementById("cfg-lsl-list");
+  if (note) note.textContent = "Looking for streams…";
+  try {
+    const body = await api<{ available: boolean; streams: { name: string; type: string; channels: number; srate: number }[]; error: string | null }>(
+      "/api/lsl/streams",
+    );
+    if (!(list instanceof HTMLSelectElement)) return;
+    const current = text(document.getElementById("cfg-lsl"));
+    const options = body.streams
+      .map((stream) => {
+        const label = `${stream.name || "(unnamed)"} · ${stream.type} · ${stream.srate || "?"} Hz`;
+        return `<option value="${esc(stream.name)}">${esc(label)}</option>`;
+      })
+      .join("");
+    list.innerHTML = `<option value="">Any EEG stream</option>${options}`;
+    if (current) list.value = current;
+    if (note) note.textContent = body.error ? body.error : body.streams.length ? `${body.streams.length} stream(s)` : "No streams found.";
+  } catch (error) {
+    if (note) note.textContent = error instanceof Error ? error.message : "Could not look for streams.";
+  }
+}
+
+function applySetup(): void {
+  const input = document.getElementById("cfg-inputs")?.dataset.selected ?? "synthetic";
+  const draft = {
+    input,
+    oscPort: num(document.getElementById("cfg-osc-port"), Number.NaN),
+    oscHost: text(document.getElementById("cfg-osc-host")) || "0.0.0.0",
+    playbackPath: text(document.getElementById("cfg-playback")),
+    playbackSpeed: num(document.getElementById("cfg-speed"), Number.NaN),
+    eegScale: num(document.getElementById("cfg-scale"), Number.NaN),
+    eegFs: num(document.getElementById("cfg-fs"), Number.NaN),
+    board: text(document.getElementById("cfg-board")),
+    mac: text(document.getElementById("cfg-mac")),
+    lslName: text(document.getElementById("cfg-lsl")),
+    powerline: num(document.getElementById("cfg-power"), Number.NaN),
+    displayHz: num(document.getElementById("cfg-display"), Number.NaN),
+    minutes: num(document.getElementById("cfg-minutes"), Number.NaN),
+    traceWindow: num(document.getElementById("cfg-trace"), Number.NaN),
+    smoothSec: num(document.getElementById("cfg-smooth"), Number.NaN),
+  };
+  const problem = validateSetup(draft);
+  if (problem) {
+    setupFeedback(problem, "bad");
+    return;
+  }
+  subject.value = text(document.getElementById("cfg-subject"));
+  task.value = text(document.getElementById("cfg-task"));
+  notes.value = text(document.getElementById("cfg-notes"));
+  timelineMinutes = draft.minutes;
+  traceWindow = draft.traceWindow;
+  view.smoothSec = draft.smoothSec;
+  applyView();
+  const nextToken = text(document.getElementById("cfg-token"));
+  token = nextToken;
+  if (token) localStorage.setItem("liminalgate.token", token);
+  else localStorage.removeItem("liminalgate.token");
+  const body = {
+    input_type: draft.input,
+    osc_host: draft.oscHost,
+    osc_port: draft.oscPort,
+    playback_path: draft.playbackPath,
+    playback_speed: Number.isFinite(draft.playbackSpeed) ? draft.playbackSpeed : 1,
+    playback_loop: (document.getElementById("cfg-loop") as HTMLInputElement | null)?.checked ?? true,
+    eeg_scale: draft.eegScale,
+    eeg_fs: draft.eegFs,
+    brainflow_board: draft.board || "synthetic",
+    brainflow_mac: draft.mac,
+    brainflow_serial: text(document.getElementById("cfg-serial")),
+    brainflow_other_info: text(document.getElementById("cfg-other")),
+    lsl_name: draft.lslName,
+    powerline_hz: draft.powerline,
+    display_hz: draft.displayHz,
+    server_audio: (document.getElementById("cfg-audio") as HTMLInputElement | null)?.checked ?? false,
+    profile: text(document.getElementById("cfg-profile")) || undefined,
+  };
+  void api<Config>("/api/config", { method: "PUT", body: JSON.stringify(body) })
+    .then((saved) => {
+      config = saved;
+      const message = `Applied. ${saved.input_type} is the active input.`;
+      setupFeedback(message, "ok");
+      showToast(message);
+      socket?.close();
+      connect();
+      void refreshSetupLive();
+    })
+    .catch((error: Error) => {
+      setupFeedback(error.message, "bad");
+      showToast(error.message);
+    });
+}
+
+drawerBody.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) return;
+  if (target.id === "cfg-file" && target.value) {
+    const path = document.getElementById("cfg-playback");
+    if (path instanceof HTMLInputElement) path.value = target.value;
+  }
+  if (target.id === "cfg-lsl-list") {
+    const name = document.getElementById("cfg-lsl");
+    if (name instanceof HTMLInputElement) name.value = target.value;
+  }
+});
 
 drawerBody.addEventListener("click", (event) => {
   const target = event.target;
@@ -777,33 +1312,38 @@ drawerBody.addEventListener("click", (event) => {
     return;
   }
   if (target.id === "save-setup") {
-    const input = text(document.getElementById("cfg-input"));
-    const body = {
-      input_type: input,
-      osc_host: text(document.getElementById("cfg-osc-host")),
-      osc_port: num(document.getElementById("cfg-osc-port"), 5000),
-      playback_path: text(document.getElementById("cfg-playback")),
-      playback_speed: num(document.getElementById("cfg-speed"), 1),
-      eeg_scale: num(document.getElementById("cfg-scale"), 1),
-      eeg_fs: num(document.getElementById("cfg-fs"), 256),
-      brainflow_board: text(document.getElementById("cfg-board")),
-      brainflow_mac: text(document.getElementById("cfg-mac")),
-      lsl_name: text(document.getElementById("cfg-lsl")),
-      powerline_hz: num(document.getElementById("cfg-power"), 50),
-      server_audio: (document.getElementById("cfg-audio") as HTMLInputElement | null)?.checked ?? false,
-    };
-    const nextToken = text(document.getElementById("cfg-token"));
-    token = nextToken;
-    if (token) localStorage.setItem("liminalgate.token", token);
-    else localStorage.removeItem("liminalgate.token");
-    void api<Config>("/api/config", { method: "PUT", body: JSON.stringify(body) })
-      .then((saved) => {
-        config = saved;
-        showToast(`Input is ${saved.input_type}`);
-        socket?.close();
-        connect();
-      })
-      .catch((error: Error) => showToast(error.message));
+    applySetup();
+    return;
+  }
+  const bleButton = target.closest("[data-ble]");
+  if (bleButton instanceof HTMLButtonElement) {
+    applyBleDevice(bleButton);
+    return;
+  }
+  const inputButton = target.closest("[data-input]");
+  if (inputButton instanceof HTMLButtonElement && inputButton.dataset.input) {
+    selectInput(inputButton.dataset.input);
+    return;
+  }
+  if (target.dataset.scale) {
+    const scale = document.getElementById("cfg-scale");
+    if (scale instanceof HTMLInputElement) scale.value = target.dataset.scale;
+    return;
+  }
+  if (target.dataset.line) {
+    const line = document.getElementById("cfg-power");
+    if (line instanceof HTMLInputElement) line.value = target.dataset.line;
+    for (const button of drawerBody.querySelectorAll<HTMLButtonElement>("[data-line]")) {
+      button.classList.toggle("on", button === target);
+    }
+    return;
+  }
+  if (target.id === "cfg-ble-scan") {
+    void scanBrainflowDevices();
+    return;
+  }
+  if (target.id === "cfg-lsl-refresh") {
+    void findLslStreams();
     return;
   }
   const remove = target.dataset.remove;
@@ -857,26 +1397,74 @@ document.getElementById("trace-mode")?.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement) || !target.dataset.mode) return;
   traceMode = target.dataset.mode === "raw" ? "raw" : "filtered";
-  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
-  redrawTraces();
+  applyView();
+  syncTraces(true);
 });
 
 document.getElementById("trace-window")?.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement) || !target.dataset.window) return;
   traceWindow = Number(target.dataset.window);
-  eegPlot.setWindow(traceWindow);
-  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
-  redrawTraces();
+  applyView();
 });
 
 document.getElementById("minute-toggle")?.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement) || !target.dataset.minutes) return;
   timelineMinutes = Number(target.dataset.minutes);
-  timelinePlot.setWindow(timelineMinutes * 60);
-  target.parentElement?.querySelectorAll("button").forEach((button) => button.classList.toggle("on", button === target));
-  redrawTimeline();
+  applyView();
+});
+
+document.querySelector("main")?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest("[data-collapse]");
+  if (!(button instanceof HTMLButtonElement) || view.calm) return;
+  const id = button.dataset.collapse as CardId;
+  view.collapsed = view.collapsed.includes(id) ? view.collapsed.filter((item) => item !== id) : [...view.collapsed, id];
+  applyView();
+  if (id === "eeg") syncTraces(true);
+  if (id === "timeline") syncTimeline(true);
+  if (id === "bands" && pendingBands) renderBands(pendingBands);
+  if (id === "ratios" && pendingRatios) renderRatios(pendingRatios);
+});
+
+const viewMenu = document.getElementById("view-menu");
+const viewBtn = document.getElementById("view-btn");
+viewBtn?.addEventListener("click", () => {
+  if (!viewMenu) return;
+  viewMenu.hidden = !viewMenu.hidden;
+  viewBtn.setAttribute("aria-expanded", viewMenu.hidden ? "false" : "true");
+});
+viewMenu?.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || !target.dataset.show) return;
+  const id = target.dataset.show as CardId;
+  view.hidden = target.checked ? view.hidden.filter((item) => item !== id) : [...view.hidden, id];
+  if (!target.checked) view.collapsed = view.collapsed.filter((item) => item !== id);
+  applyView();
+});
+const showAutoBox = document.getElementById("show-auto");
+if (showAutoBox instanceof HTMLInputElement) {
+  showAutoBox.checked = showAuto;
+  showAutoBox.addEventListener("change", () => {
+    showAuto = showAutoBox.checked;
+    localStorage.setItem(AUTO_KEY, showAuto ? "1" : "0");
+    paintTrack();
+  });
+}
+document.getElementById("calm-btn")?.addEventListener("click", () => {
+  view.calm = !view.calm;
+  if (viewMenu) viewMenu.hidden = true;
+  applyView();
+  syncTimeline(true);
+  if (!view.calm) syncTraces(true);
+});
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Node) || !viewMenu || viewMenu.hidden) return;
+  if (viewBtn?.parentElement?.contains(event.target)) return;
+  viewMenu.hidden = true;
+  viewBtn?.setAttribute("aria-expanded", "false");
 });
 
 markerButtons.addEventListener("click", (event) => {
@@ -896,11 +1484,15 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.setInterval(() => {
-  if (!recordAnchor) return;
-  const seconds = recordAnchor.elapsed + (performance.now() - recordAnchor.at) / 1000;
-  const whole = Math.max(0, Math.floor(seconds));
-  clock.textContent = `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
-  paintTrack();
-}, 250);
+  if (recordAnchor) {
+    const seconds = recordAnchor.elapsed + (performance.now() - recordAnchor.at) / 1000;
+    const whole = Math.max(0, Math.floor(seconds));
+    const label = `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+    clock.textContent = label;
+    recordBtn.textContent = `Stop ${label}`;
+  }
+  if (cardShown("markers")) paintTrack();
+}, 1000);
 
+applyView();
 connect();

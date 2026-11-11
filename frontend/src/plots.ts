@@ -1,5 +1,7 @@
 import uPlot from "uplot";
 
+import { glide, shouldDraw } from "./pace";
+
 const COLORS = ["#7aa2ff", "#5dcaa5", "#e0b15a", "#e07a8a", "#c4b5fd", "#8fd18a"];
 
 export interface TimedPoint {
@@ -7,92 +9,174 @@ export interface TimedPoint {
   values: (number | null)[];
 }
 
+export interface PlotOptions {
+  maxFps?: number;
+  glide?: boolean;
+  /** How much history to keep. The visible window can be shorter. */
+  retainSec?: number;
+}
+
 function sizeOf(el: HTMLElement): { width: number; height: number } {
   const rect = el.getBoundingClientRect();
   return {
-    width: Math.max(120, Math.floor(rect.width)),
-    height: Math.max(80, Math.floor(rect.height)),
+    width: Math.max(0, Math.floor(rect.width)),
+    height: Math.max(0, Math.floor(rect.height)),
   };
 }
 
 export class RollingPlot {
   private plot: uPlot | null = null;
   private key = "";
+  private mountedKey = "";
   private xs: number[] = [];
   private ys: (number | null)[][] = [];
   private dashes: boolean[] = [];
   private observer: ResizeObserver;
+  private maxFps: number;
+  private glideEnabled: boolean;
+  private retainSec: number;
+  private paused = false;
+  private raf = 0;
+  private lastDraw = 0;
+  private viewEnd = 0;
+  private anchored = false;
+  private targetEnd = 0;
+  private labels: string[] = [];
 
   constructor(
     private el: HTMLElement,
     private windowSec: number,
     private colors: string[] = COLORS,
+    options: PlotOptions = {},
   ) {
+    this.maxFps = options.maxFps ?? 12;
+    this.glideEnabled = options.glide ?? true;
+    this.retainSec = options.retainSec ?? windowSec + 2;
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(el);
   }
 
   setWindow(seconds: number): void {
     this.windowSec = seconds;
-    this.trim();
-    this.draw();
+    this.kick();
+  }
+
+  setPaused(paused: boolean): void {
+    const was = this.paused;
+    this.paused = paused;
+    if (was && !paused) {
+      if (this.labels.length) this.ensure(this.labels);
+      requestAnimationFrame(() => {
+        this.resize();
+        this.kick();
+      });
+    }
   }
 
   reset(): void {
     this.xs = [];
     this.ys = this.ys.map(() => []);
-    this.draw();
+    this.anchored = false;
+    this.viewEnd = 0;
+    this.targetEnd = 0;
+    this.kick();
+  }
+
+  replace(channels: string[], points: TimedPoint[], dashes: boolean[] = []): void {
+    this.key = channels.join("|");
+    this.dashes = dashes;
+    this.xs = [];
+    this.ys = channels.map(() => []);
+    this.anchored = false;
+    for (const point of points) this.add(channels, point);
+    this.ensure(channels);
+    this.kick();
   }
 
   pushTimed(channels: string[], points: TimedPoint[], dashes: boolean[] = []): void {
-    if (!channels.length) {
-      return;
-    }
+    if (!channels.length || !points.length) return;
     const signature = channels.join("|");
     if (signature !== this.key) {
-      this.key = signature;
-      this.dashes = dashes;
-      this.xs = [];
-      this.ys = channels.map(() => []);
-      this.mount(channels);
+      this.replace(channels, points, dashes);
+      return;
     }
-    for (const point of points) {
-      this.xs.push(point.t);
-      channels.forEach((_, index) => {
-        const value = point.values[index];
-        this.ys[index].push(typeof value === "number" && Number.isFinite(value) ? value : null);
-      });
-    }
-    this.trim();
-    this.draw();
+    if (dashes.length) this.dashes = dashes;
+    for (const point of points) this.add(channels, point);
+    this.kick();
   }
 
   setSeries(x: number[], y: number[]): void {
     this.xs = x;
     this.ys = [y];
-    if (!this.plot || this.key !== "spectrum") {
-      this.key = "spectrum";
-      this.dashes = [];
-      this.mount(["mean"]);
+    this.key = "spectrum";
+    this.dashes = [];
+    this.glideEnabled = false;
+    this.ensure(["mean"]);
+    this.kick();
+  }
+
+  private add(channels: string[], point: TimedPoint): void {
+    this.xs.push(point.t);
+    if (point.t > this.targetEnd) this.targetEnd = point.t;
+    channels.forEach((_, index) => {
+      const value = point.values[index];
+      this.ys[index].push(typeof value === "number" && Number.isFinite(value) ? value : null);
+    });
+  }
+
+  private ensure(channels: string[]): void {
+    this.labels = channels;
+    if (this.paused) return;
+    if (!this.plot || this.mountedKey !== this.key) {
+      this.mount(channels);
+      this.mountedKey = this.key;
+    }
+  }
+
+  private kick(): void {
+    if (this.raf || this.paused) return;
+    this.raf = requestAnimationFrame((now) => this.tick(now));
+  }
+
+  private tick(now: number): void {
+    this.raf = 0;
+    if (this.paused) return;
+    if (!shouldDraw(now, this.lastDraw, this.maxFps)) {
+      this.kick();
       return;
     }
-    this.plot.setData([x, y]);
+    const dt = this.lastDraw ? (now - this.lastDraw) / 1000 : 0;
+    this.lastDraw = now;
+    let moving = false;
+    if (this.glideEnabled && this.targetEnd > 0) {
+      if (!this.anchored) {
+        this.viewEnd = this.targetEnd;
+        this.anchored = true;
+      } else {
+        const next = glide(this.viewEnd, this.targetEnd, dt || 1 / this.maxFps);
+        moving = next !== this.targetEnd;
+        this.viewEnd = next;
+      }
+    }
+    this.trim();
+    this.draw();
+    if (moving) this.kick();
   }
 
   private trim(): void {
-    if (!this.xs.length) {
-      return;
-    }
-    const last = this.xs[this.xs.length - 1] ?? 0;
-    const min = last - this.windowSec;
-    while (this.xs.length > 2 && this.xs[0] < min) {
-      this.xs.shift();
-      this.ys.forEach((series) => series.shift());
-    }
+    const last = this.targetEnd || this.xs[this.xs.length - 1];
+    if (last == null) return;
+    const min = last - this.retainSec;
+    let head = 0;
+    while (head < this.xs.length - 2 && (this.xs[head] ?? 0) < min) head += 1;
+    if (head < 64) return;
+    this.xs = this.xs.slice(head);
+    this.ys = this.ys.map((series) => series.slice(head));
   }
 
   private draw(): void {
-    this.plot?.setData([this.xs, ...this.ys] as uPlot.AlignedData);
+    if (!this.plot || this.paused) return;
+    this.plot.setData([this.xs, ...this.ys] as uPlot.AlignedData);
   }
 
   private mount(channels: string[]): void {
@@ -103,7 +187,7 @@ export class RollingPlot {
       series.push({
         label,
         stroke: this.colors[index % this.colors.length],
-        width: this.dashes[index] ? 1.2 : 1.6,
+        width: this.dashes[index] ? 1.4 : 2,
         dash: this.dashes[index] ? [6, 4] : undefined,
         spanGaps: false,
         points: { show: false },
@@ -111,10 +195,19 @@ export class RollingPlot {
     });
     this.plot = new uPlot(
       {
-        width,
-        height,
+        width: Math.max(120, width),
+        height: Math.max(80, height),
+        pxAlign: false,
         series,
-        scales: { x: { time: false } },
+        scales: {
+          x: {
+            time: false,
+            range: (_plot, min, max) => {
+              if (!this.glideEnabled || !this.anchored) return [min, max];
+              return [this.viewEnd - this.windowSec, this.viewEnd];
+            },
+          },
+        },
         axes: [
           {
             stroke: "#93a4ba",
@@ -136,21 +229,16 @@ export class RollingPlot {
   }
 
   private resize(): void {
-    if (!this.plot) {
-      return;
-    }
+    if (!this.plot || this.paused) return;
     const { width, height } = sizeOf(this.el);
+    if (width < 40 || height < 40) return;
     this.plot.setSize({ width, height });
   }
 }
 
 function clock(seconds: number | null): string {
-  if (seconds == null || !Number.isFinite(seconds)) {
-    return "";
-  }
-  if (seconds < 1_000_000_000) {
-    return seconds.toFixed(1);
-  }
+  if (seconds == null || !Number.isFinite(seconds)) return "";
+  if (seconds < 1_000_000_000) return seconds.toFixed(0);
   const date = new Date(seconds * 1000);
   return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }

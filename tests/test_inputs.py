@@ -7,7 +7,7 @@ import pytest
 from liminalgate.errors import InputError
 from liminalgate.inputs.brainflow_input import resolve_board_id
 from liminalgate.inputs.lsl_input import LSLInput
-from liminalgate.inputs.osc_mindmonitor import OscMindMonitorInput, parse_message
+from liminalgate.inputs.osc_mindmonitor import OscMindMonitorInput, known_osc_address, parse_message
 from liminalgate.inputs.playback import ColumnMap, PlaybackInput, items_from_row
 from liminalgate.signals import Event, Sample
 from pythonosc.udp_client import SimpleUDPClient
@@ -40,6 +40,21 @@ def test_parse_mind_monitor_paths():
     bands = parse_message("/muse/elements/theta_absolute", (0.1, 0.2, 0.3, 0.4), now=1.0)
     assert bands[0].stream == "device_band"
     assert parse_message("/muse/not-a-stream", (1,), now=1.0) == []
+    ppg = parse_message("/muse/ppg", (0.1, 0.8, 0.4, 0.2), now=1.0)
+    assert ppg[0].stream == "ppg"
+    assert ppg[0].channels == ("ambient", "ir", "red", "ch4")
+    assert ppg[0].rate == 64.0
+    device = parse_message("/muse/elements/heart_rate", (72.0,), now=1.0)
+    assert device[0].stream == "device_hr"
+    assert device[0].values == (72.0,)
+    assert parse_message("/muse/elements/heart_rate", (0.0,), now=1.0) == []
+    assert parse_message("/muse/algorithm/heart", (64.0,), now=1.0)[0].values == (64.0,)
+    batt = parse_message("/muse/batt", (80, 3900, 3700, 33), now=1.0)
+    assert batt[0].channels[3] == "temp"
+    assert batt[0].values[3] == 33
+    assert known_osc_address("/muse/ppg")
+    assert known_osc_address("/muse/elements/heart_rate")
+    assert not known_osc_address("/muse/not-a-stream")
 
 
 def test_osc_udp_roundtrip():
@@ -131,6 +146,8 @@ def test_brainflow_board_aliases():
         MUSE_2_BOARD = 38
 
     assert resolve_board_id(Ids, "muse_s_athena") == 67
+    assert resolve_board_id(Ids, "MUSE_S_ATHENA_BOARD") == 67
+    assert resolve_board_id(Ids, "67") == 67
     assert resolve_board_id(Ids, "synthetic") == -1
 
     class Typo:

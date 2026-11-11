@@ -13,11 +13,11 @@ ratios:
   - {name: alpha_over_theta, expression: alpha/theta}
 markers:
   - {name: relax, color: "#5dcaa5", hotkey: r, osc: null}
-  - {name: "Marker 1", color: "#7aa2ff", hotkey: "1", osc: 1}
-  - {name: "Marker 2", color: "#5dcaa5", hotkey: "2", osc: 2}
-  - {name: "Marker 3", color: "#e0b15a", hotkey: "3", osc: 3}
-  - {name: "Marker 4", color: "#e07a8a", hotkey: "4", osc: 4}
-  - {name: "Marker 5", color: "#c4b5fd", hotkey: "5", osc: 5}
+  - {name: vibracije, color: "#7aa2ff", hotkey: "1", osc: 1}
+  - {name: "puls tijela", color: "#5dcaa5", hotkey: "2", osc: 2}
+  - {name: izlazak, color: "#e0b15a", hotkey: "3", osc: 3}
+  - {name: budjenje, color: "#e07a8a", hotkey: "4", osc: 4}
+  - {name: ostalo, color: "#c4b5fd", hotkey: "5", osc: 5}
 feedback:
   - metric: alpha
     source: relative

@@ -12,9 +12,11 @@ No telemetry. An optional access token can close the LAN API.
 docker compose up --build
 ```
 
-Open `http://<this-machine>:8080`. With the default synthetic input you should see four traces, a spectrum, band bars, a theta/delta ratio, and a heart-rate estimate within a few seconds.
+Open `http://<this-machine>:8080`. The first view is the band-power chart (about 5 minutes, updating about twice a second), the relative band bars, and markers. EEG and the spectrum are collapsed; ratios and the session card are hidden until you open **View**. **Calm** leaves only the band chart and the signal-quality dots, for a TV.
 
-Click **Enable tone** once (browsers block audio until a click). The hypnagogic profile maps the 5.5–6 Hz peak onto a tone and fades it if alpha relative power gets high. The readout under the ratios shows `Tone on · Hz · volume %`.
+The EEG lanes default to 10 seconds. **Filtered** is the 1–45 Hz display filter plus the powerline notch. **Raw** is the headset stream as received, including the ~800 µV offset. Recording is always raw.
+
+Click **View → Tone** once (browsers block audio until a click). The hypnagogic profile maps the 5.5–6 Hz peak onto a tone and fades it if alpha relative power gets high. The readout under the ratios shows `Tone on · Hz · volume %`.
 
 Click **Record**, wait a few seconds, click **Stop**. The session lands in the `liminalgate-data` volume as CSV plus EDF+ (markers are EDF+ annotations). Copy it out with:
 
@@ -79,7 +81,9 @@ One input runs at a time. Samples go through a ring buffer. A sliding Welch PSD 
 
 The EEG chart is filtered for display only: a causal high-pass at 1 Hz, a low-pass at 45 Hz, and a notch at the configured powerline. **Filtered** is the default (Mind Monitor's view). **Raw** is the unfiltered ADC. AUX channels are kept on the trace and left out of bands and the spectrum. A channel is also left out when horseshoe or `is_good` says it is bad, when it is flat, or when samples sit on the ADC rail (near 0 µV, or at the top of the range). Athena's 14-bit rail is about 1450 µV; the older FAQ range tops out at 1682 µV. The ~800 µV baseline on an unfiltered trace is that unsigned midpoint, not a scale error.
 
-The top chart is absolute band power over time for delta, theta, alpha, beta, and gamma, in log10 µV² (Bels), averaged over the good channels. If Mind Monitor is also sending `/muse/elements/*_absolute`, those device values are drawn as dashed lines. OSC bursts are paced on a 1/fs sample clock so a packet of samples is not stacked on one timestamp, and a real pause becomes a gap in the line instead of a straight stroke across it.
+Heart rate uses `/muse/ppg` when that is all Mind Monitor sends. Each channel (ambient, IR, red, and any extra Athena channels) is band-passed around 0.7–3.5 Hz and the strongest one is peak-detected. A headset heart-rate path such as `/muse/elements/heart_rate` is used when it arrives. The header reads `no PPG data` until a waveform or device rate shows up, then `computing` until a pulse locks. `/muse/batt` carries battery level and temperature in °C; the Heart card shows °C only after that value arrives. Setup lists the OSC paths actually received. Blink and jaw-clench marks stay off unless you turn them on. The built-in marker keys are vibracije, puls tijela, izlazak, budjenje, and ostalo.
+
+The top chart is absolute band power over time for delta, theta, alpha, beta, and gamma, in log10 µV² (Bels), averaged over the good channels and smoothed with about a one-second time constant. Windows are 1, 5, 15, or 30 minutes (5 is the default). If Mind Monitor is also sending `/muse/elements/*_absolute`, those device values are drawn as dashed lines. The EEG window choices are 5, 10, and 30 seconds. Charts keep their place in `localStorage`, including which cards are collapsed. OSC bursts are paced on a 1/fs sample clock so a packet of samples is not stacked on one timestamp, and a real pause becomes a gap in the line instead of a straight stroke across it.
 
 Markers come from the buttons, hotkeys, `POST /api/markers`, and OSC `/Marker/N`. Blink and jaw clench are separate event types, debounced to 300 ms.
 
@@ -122,9 +126,9 @@ Environment prefix `LIMINALGATE_`. `LIMINALGATE_INPUT` is accepted as an alias o
 | `LIMINALGATE_EEG_FS` | `256` | Nominal EEG rate until a stream reports its own |
 | `LIMINALGATE_OSC_PORT` | `5000` | UDP listen port |
 | `LIMINALGATE_DATA_DIR` | `data` | Sessions, profiles, saved UI config |
-| `LIMINALGATE_POWERLINE_HZ` | `50` | Metadata only |
+| `LIMINALGATE_POWERLINE_HZ` | `50` | Display notch, also stored on the session |
 
-The Setup panel writes `data/config.json`. On the next start that file overrides the environment for the fields the UI can change (not the token, host, or port). `/api/health` and the static dashboard stay open when a token is set. API docs: `/docs`.
+**Setup** asks for the input first (OSC, BrainFlow, LSL, playback, or synthetic) and then only the fields that input uses. OSC shows the UDP port, a Mind Monitor hint, and a live packet count. Signal scale, powerline, chart windows, and the session profile sit in their own sections. Advanced options stay folded. Apply reports success or the validation error in the panel. The panel writes `data/config.json`. On the next start that file overrides the environment for the fields the UI can change (not the token, host, or port). `/api/health` and the static dashboard stay open when a token is set. API docs: `/docs`.
 
 Put the token in the browser once via Setup. It is kept in `localStorage` on that browser.
 
@@ -136,7 +140,7 @@ Both libraries are installed in the image and imported only when that input is s
 docker compose -f compose.yaml -f compose.host.yaml up --build
 ```
 
-That mounts `/var/run/dbus` and puts the process on the host network. The app then listens on port 8080 and UDP 5000 directly. BrainFlow board names: `synthetic`, `muse_s_athena` (also the older `MUSE_S_ANTHENA_BOARD` spelling), `muse_2`, `muse_s`, `muse_2016`. A missing Athena id asks you to upgrade BrainFlow.
+That mounts `/var/run/dbus` and puts the process on the host network. The app then listens on port 8080 and UDP 5000 directly. Setup's BrainFlow section lists the BrainFlow boards and can scan for nearby headsets (name, MAC, RSSI) via bleak or simpleble. Picking a `MuseS-` device fills the MAC, the serial (the advertised name), and `MUSE_S_ATHENA_BOARD` (67). Muse S and Athena share that advertisement, so switch the board to `muse_s` for an older Muse S. If the container cannot see Bluetooth, the scan says to run with `compose.host.yaml`. A missing Athena id asks you to upgrade BrainFlow.
 
 The LSL input reads one EEG inlet. Marker inlet, clock correction, and irregular rate 0 are still TODO.
 
