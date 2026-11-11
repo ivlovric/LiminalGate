@@ -9,6 +9,8 @@ import pyedflib
 import pytest
 from fastapi.testclient import TestClient
 from liminalgate.app import create_app
+from liminalgate.errors import NotFoundError
+from liminalgate.library import file_inside
 from liminalgate.recording import SessionRecorder
 from liminalgate.settings import Settings
 from liminalgate.signals import Event, Sample
@@ -143,6 +145,19 @@ def test_websocket_marker(tmp_path: Path):
             assert found["kind"] == "marker"
 
 
+def test_session_file_cannot_escape_the_session_directory(tmp_path: Path):
+    folder = tmp_path / "sub-01" / "ses-1"
+    folder.mkdir(parents=True)
+    (folder / "keep.csv").write_text("timestamp\n", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope", encoding="utf-8")
+    assert file_inside(folder, "keep.csv") == (folder / "keep.csv").resolve()
+    with pytest.raises(NotFoundError):
+        file_inside(folder, "../../secret.txt")
+    with pytest.raises(NotFoundError):
+        file_inside(folder, "missing.csv")
+
+
 def test_recordings_can_be_listed_downloaded_and_deleted(tmp_path: Path):
     app = create_app(Settings(data_dir=tmp_path, input_type="synthetic", token="secret"))
     headers = {"Authorization": "Bearer secret"}
@@ -176,8 +191,8 @@ def test_recordings_can_be_listed_downloaded_and_deleted(tmp_path: Path):
         one = client.get(f"/api/sessions/01/{row['session_id']}/files/{csv_name}", headers=headers)
         assert one.status_code == 200
         assert one.content.startswith(b"timestamp")
-        outside = client.get(f"/api/sessions/01/{row['session_id']}/files/../../secret", headers=headers)
-        assert outside.status_code == 404
+        missing = client.get(f"/api/sessions/01/{row['session_id']}/files/missing.csv", headers=headers)
+        assert missing.status_code == 404
         deleted = client.delete(f"/api/sessions/01/{row['session_id']}", headers=headers)
         assert deleted.status_code == 200
         assert client.get(f"/api/sessions/01/{row['session_id']}/archive", headers=headers).status_code == 404

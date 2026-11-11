@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Band power, markers, and the other full-width cards keep their content height instead of being squeezed to the viewport.
+- Session times in Recordings use the browser's local clock (`11.11.2026 15:27`). Individual files sit behind Files; Download zip and Delete stay on the row.
+- The page has space below the last card.
+
 ## 0.4.0
 
 - Recordings can be listed, downloaded (one zip or a single file), and deleted from the dashboard. The same routes honor `LIMINALGATE_TOKEN`.

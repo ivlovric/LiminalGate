@@ -2,6 +2,7 @@ import "uplot/dist/uPlot.min.css";
 
 import { TonePlayer } from "./audio";
 import { CARDS, ema, loadView, smoothSeries, type CardId, type ViewState } from "./pace";
+import { formatSessionWhen } from "./time";
 import { BOARDS, INPUTS, validateSetup } from "./setup";
 import { RollingPlot, type TimedPoint } from "./plots";
 import "./style.css";
@@ -512,7 +513,7 @@ async function loadRecordings(): Promise<void> {
       .map((row) => {
         const subject = encodeURIComponent(row.subject_id);
         const session = encodeURIComponent(row.session_id);
-        const when = row.local_start ? row.local_start.replace("T", " ") : row.session_id;
+        const when = row.local_start ? formatSessionWhen(row.local_start) : row.session_id;
         const duration = row.duration_sec == null ? "—" : formatSec(row.duration_sec);
         const streams = (row.streams ?? []).join(", ") || "session";
         const files = (row.inventory ?? [])
@@ -521,12 +522,15 @@ async function loadRecordings(): Promise<void> {
               `<button type="button" data-file="${esc(file.name)}" data-subject="${esc(row.subject_id)}" data-session="${esc(row.session_id)}">${esc(file.name.split("/").pop() || file.name)} · ${formatBytes(file.bytes)}</button>`,
           )
           .join("");
+        const disclosure = files
+          ? `<details class="file-list"><summary>Files</summary><div class="file-grid">${files}</div></details>`
+          : "";
         return `<article class="recording">
           <header><strong>${esc(when)}</strong> <span class="muted">${esc(row.task)} · ${duration} · ${row.eeg_samples.toLocaleString()} EEG · ${esc(streams)}</span></header>
           <div class="files">
             <button type="button" data-zip="${subject}/${session}">Download zip</button>
             <button type="button" data-delete="${esc(row.subject_id)}" data-session="${esc(row.session_id)}">Delete</button>
-            ${files}
+            ${disclosure}
           </div>
         </article>`;
       })
