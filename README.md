@@ -1,6 +1,6 @@
 # LiminalGate
 
-Open, self-hosted neuro gateway for live EEG, custom bands, markers, and biofeedback. v0.4 is one container. A browser on the same LAN (laptop, phone, or a TV) shows the dashboard. No telemetry. An optional access token can close the LAN API.
+Open, self-hosted neuro gateway for live EEG, custom bands, markers, and biofeedback. v0.4 is one container. A browser on the same LAN (laptop, phone, or a TV) shows the dashboard. No telemetry. An optional access token can close the LAN API. Biofeedback is provded over tones in predefined profiles what is intereting to track or achieve
 
 The default input is a synthetic theta-dominant signal, so the app runs with no headset. Mind Monitor OSC is the path that is meant to work with a Muse.
 
